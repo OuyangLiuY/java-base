@@ -172,7 +172,92 @@ public interface ExecutorService extends Executor {
         throws InterruptedException, ExecutionException, TimeoutException;
 ```
 
-12.3、
+### 12.3、AbstractExecutorService
+
+#### 12.3.1、inovkeAny
+
+总结：inovkeAny会出现执行多个任务，但只取第一个任务结果的情况，原理如下：
+
+```java
+ /**
+     * the main mechanics of invokeAny.
+     */
+    private <T> T doInvokeAny(Collection<? extends Callable<T>> tasks,
+                              boolean timed, long nanos)
+        throws InterruptedException, ExecutionException, TimeoutException {
+        if (tasks == null)
+            throw new NullPointerException();
+        int ntasks = tasks.size();
+        if (ntasks == 0)
+            throw new IllegalArgumentException();
+        ArrayList<Future<T>> futures = new ArrayList<>(ntasks);
+        // 将this对象放入ecs中使用ecs，完成任务执行
+        ExecutorCompletionService<T> ecs =
+            new ExecutorCompletionService<T>(this);
+
+        // For efficiency, especially in executors with limited
+        // parallelism, check to see if previously submitted tasks are
+        // done before submitting more of them. This interleaving
+        // plus the exception mechanics account for messiness of main
+        // loop.
+
+        try {
+            // Record exceptions so that if we fail to obtain any
+            // result, we can throw the last exception we got.
+            ExecutionException ee = null;
+            // 判断一下是否是timed超时执行
+            final long deadline = timed ? System.nanoTime() + nanos : 0L;
+            Iterator<? extends Callable<T>> it = tasks.iterator();
+
+            // Start one task for sure; the rest incrementally
+           
+            futures.add(ecs.submit(it.next()));  // 第一次执行
+            --ntasks; 
+            int active = 1;	
+
+            for (;;) {
+                Future<T> f = ecs.poll(); // 从阻塞队列中拿出上面添加的任务，刚提交，未执行完毕，所以此时返回null
+                if (f == null) {	// 为null，
+                    if (ntasks > 0) {	// 继续获取下一个任务
+                        --ntasks;
+                        futures.add(ecs.submit(it.next()));	// 执行
+                        ++active;
+                    }
+                    else if (active == 0)
+                        break;
+                    else if (timed) {
+                        f = ecs.poll(nanos, NANOSECONDS);
+                        if (f == null)
+                            throw new TimeoutException();
+                        nanos = deadline - System.nanoTime();
+                    }
+                    else
+                        f = ecs.take();
+                }
+                if (f != null) { // 第二次for循环进来，第一个任务f执行完毕不为空
+                    --active;	// 激活线程数--
+                    try {
+                        return f.get();	// 拿到第一个任务的返回值
+                    } catch (ExecutionException eex) {
+                        ee = eex;
+                    } catch (RuntimeException rex) {
+                        ee = new ExecutionException(rex);
+                    }
+                }
+            }
+
+            if (ee == null)
+                ee = new ExecutionException();
+            throw ee;
+
+        } finally {
+            // 执行完第一个任务，取消之后的任务
+            cancelAll(futures);
+        }
+    }
+```
+
+
 
 ```java
 
@@ -315,11 +400,13 @@ public abstract class AbstractExecutorService implements ExecutorService {
             throw new NullPointerException();
         ArrayList<Future<T>> futures = new ArrayList<>(tasks.size());
         try {
+            // for 循环将callable任务包装成RunnableFuture，并执行
             for (Callable<T> t : tasks) {
                 RunnableFuture<T> f = newTaskFor(t);
                 futures.add(f);
                 execute(f);
             }
+            // for循环等待每个任务依次运行结束
             for (int i = 0, size = futures.size(); i < size; i++) {
                 Future<T> f = futures.get(i);
                 if (!f.isDone()) {
@@ -327,6 +414,7 @@ public abstract class AbstractExecutorService implements ExecutorService {
                     catch (CancellationException | ExecutionException ignore) {}
                 }
             }
+            // 返回运行结果futures
             return futures;
         } catch (Throwable t) {
             cancelAll(futures);
@@ -389,7 +477,7 @@ public abstract class AbstractExecutorService implements ExecutorService {
 }
 ```
 
-### 1.2.3、ExecutorCompletionService
+### 1.2.4、ExecutorCompletionService
 
 ```java
 public class ExecutorCompletionService<V> implements CompletionService<V> {
@@ -505,6 +593,606 @@ public class ExecutorCompletionService<V> implements CompletionService<V> {
 ```
 
 ## 2、ThreadPoolExecutor
+
+### 2.1、ThreadPoolExecutor原理
+
+![](../doc-all/images/TPE.png)
+
+### 2.2、ThreadPoolExecutor核心方法
+
+#### 2.2.1、ThreadPoolExecutor拒绝策略
+
+ThreadPoolExecutor中有默认四种拒绝策略实现，具体如下：
+
+拒绝接口
+
+```java
+public interface RejectedExecutionHandler {
+    void rejectedExecution(Runnable r, ThreadPoolExecutor executor);
+}
+```
+
+##### 2.2.1.1、拒绝策略之抛出异常
+
+```java
+public static class AbortPolicy implements RejectedExecutionHandler {
+    /**
+     * Creates an {@code AbortPolicy}.
+     */
+    public AbortPolicy() { }
+
+    /**
+     * Always throws RejectedExecutionException.
+     *
+     * @param r the runnable task requested to be executed
+     * @param e the executor attempting to execute this task
+     * @throws RejectedExecutionException always
+     */
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+        throw new RejectedExecutionException("Task " + r.toString() +
+                                             " rejected from " +
+                                             e.toString());
+    }
+}
+```
+
+##### 2.2.1.2、拒绝策略之丢弃啥也不做
+
+```java
+/**
+ * A handler for rejected tasks that silently discards the
+ * rejected task.
+ */
+public static class DiscardPolicy implements RejectedExecutionHandler {
+    /**
+     * Creates a {@code DiscardPolicy}.
+     */
+    public DiscardPolicy() { }
+
+    /**
+     * Does nothing, which has the effect of discarding task r.
+     *
+     * @param r the runnable task requested to be executed
+     * @param e the executor attempting to execute this task
+     */
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+    }
+}
+```
+
+##### 2.2.1.3、拒绝策略之丢弃最老的执行最新的
+
+```java
+/**
+ * A handler for rejected tasks that discards the oldest unhandled
+ * request and then retries {@code execute}, unless the executor
+ * is shut down, in which case the task is discarded.
+ */
+public static class DiscardOldestPolicy implements RejectedExecutionHandler {
+    /**
+     * Creates a {@code DiscardOldestPolicy} for the given executor.
+     */
+    public DiscardOldestPolicy() { }
+
+    /**
+     * Obtains and ignores the next task that the executor
+     * would otherwise execute, if one is immediately available,
+     * and then retries execution of task r, unless the executor
+     * is shut down, in which case task r is instead discarded.
+     *
+     * @param r the runnable task requested to be executed
+     * @param e the executor attempting to execute this task
+     */
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+        if (!e.isShutdown()) {
+            e.getQueue().poll();
+            e.execute(r);
+        }
+    }
+}
+```
+
+##### 2.2.1.4、拒绝策略之主线程自己执行任务
+
+```java
+/**
+ * A handler for rejected tasks that runs the rejected task
+ * directly in the calling thread of the {@code execute} method,
+ * unless the executor has been shut down, in which case the task
+ * is discarded.
+ */
+public static class CallerRunsPolicy implements RejectedExecutionHandler {
+    /**
+     * Creates a {@code CallerRunsPolicy}.
+     */
+    public CallerRunsPolicy() { }
+
+    /**
+     * Executes task r in the caller's thread, unless the executor
+     * has been shut down, in which case the task is discarded.
+     *
+     * @param r the runnable task requested to be executed
+     * @param e the executor attempting to execute this task
+     */
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+        if (!e.isShutdown()) {
+            r.run();
+        }
+    }
+}
+```
+
+#### 2.2.2、ThreadFactory
+
+
+
+```java
+public interface ThreadFactory {
+
+    /**
+     * Constructs a new {@code Thread}.  Implementations may also initialize
+     * priority, name, daemon status, {@code ThreadGroup}, etc.
+     *
+     * @param r a runnable to be executed by new thread instance
+     * @return constructed thread, or {@code null} if the request to
+     *         create a thread is rejected
+     */
+    Thread newThread(Runnable r);
+}
+
+
+private static class DefaultThreadFactory implements ThreadFactory {
+    private static final AtomicInteger poolNumber = new AtomicInteger(1);
+    private final ThreadGroup group;
+    private final AtomicInteger threadNumber = new AtomicInteger(1);
+    private final String namePrefix;
+
+    DefaultThreadFactory() {
+        SecurityManager s = System.getSecurityManager();
+        group = (s != null) ? s.getThreadGroup() :
+                              Thread.currentThread().getThreadGroup();
+        namePrefix = "pool-" +
+                      poolNumber.getAndIncrement() +
+                     "-thread-";
+    }
+
+    public Thread newThread(Runnable r) {
+        Thread t = new Thread(group, r,
+                              namePrefix + threadNumber.getAndIncrement(),
+                              0);
+        // 由此可见，线程工程创建出的线程不是后台线程
+        if (t.isDaemon())
+            t.setDaemon(false);
+        if (t.getPriority() != Thread.NORM_PRIORITY)
+            t.setPriority(Thread.NORM_PRIORITY);
+        return t;
+    }
+}
+```
+
+线程核心原理
+
+使用int的高三位来表示运行的状态
+
+```java
+private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
+private static final int COUNT_BITS = Integer.SIZE - 3;
+private static final int COUNT_MASK = (1 << COUNT_BITS) - 1;
+// runState is stored in the high-order bits
+private static final int RUNNING    = -1 << COUNT_BITS;		// 111 00..
+private static final int SHUTDOWN   =  0 << COUNT_BITS;		// 000 00..
+private static final int STOP       =  1 << COUNT_BITS;		// 001 00..
+private static final int TIDYING    =  2 << COUNT_BITS;		// 010 00..
+private static final int TERMINATED =  3 << COUNT_BITS;		// 011 00..
+```
+
+思考：为什么这样设计
+
+> 此时只有ctl小于0，说明线程是在运行中的。条件判断非常方便。
+>
+> ```c
+>  if(ctl<0)
+> 	doSomething();
+> ```
+
+
+
+阻塞队列
+
+```java
+/* A {@link Queue} that additionally supports operations that wait for
+ * the queue to become non-empty when retrieving an element, and wait
+ * for space to become available in the queue when storing an element.
+ * 检索(获取)元素时，等待队列中直到有数据，添加元素直到有可用空间
+ */
+public interface BlockingQueue<E> extends Queue<E> {
+     
+ }     
+```
+
+
+
+### 2.2.2、核心方法-execute
+
+```java
+public void execute(Runnable command) {
+    if (command == null)
+        throw new NullPointerException();
+    /*
+     * Proceed in 3 steps:
+     *
+     * 1. If fewer than corePoolSize threads are running, try to
+     * start a new thread with the given command as its first
+     * task.  The call to addWorker atomically checks runState and
+     * workerCount, and so prevents false alarms that would add
+     * threads when it shouldn't, by returning false.
+     *
+     * 2. If a task can be successfully queued, then we still need
+     * to double-check whether we should have added a thread
+     * (because existing ones died since last checking) or that
+     * the pool shut down since entry into this method. So we
+     * recheck state and if necessary roll back the enqueuing if
+     * stopped, or start a new thread if there are none.
+     *
+     * 3. If we cannot queue task, then we try to add a new
+     * thread.  If it fails, we know we are shut down or saturated
+     * and so reject the task.
+     */
+    int c = ctl.get();
+    // 当前工作线程数，小于核心线程数，那么就添加到worker中，执行
+    if (workerCountOf(c) < corePoolSize) {
+        if (addWorker(command, true))
+            return;
+        c = ctl.get();
+    }
+    // 此时运行线程数已经大于了核心线程数，那么尝试添加任务到工作队列中，
+    // 并重新检查是否已经有任务执行完成，或
+    if (isRunning(c) && workQueue.offer(command)) {
+        int recheck = ctl.get();
+        if (! isRunning(recheck) && remove(command))
+            reject(command);
+        else if (workerCountOf(recheck) == 0)
+            addWorker(null, false);
+    }
+    else if (!addWorker(command, false))	// 否则，就尝试添加为非核心线程数得线程去执行任务
+        reject(command);
+}
+```
+
+### 2.2.3、核心方法-addWorker
+
+```java
+ private boolean addWorker(Runnable firstTask, boolean core) {
+        retry:
+     // 当前方法，判断状态，线程数变量+1
+        for (;;) {
+            int c = ctl.get();
+            int rs = runStateOf(c);
+
+            // Check if queue empty only if necessary.
+            if (rs >= SHUTDOWN &&	// 在线程池状态为shutdown之后，保证
+                ! (rs == SHUTDOWN &&	// 线程已经终止
+                   firstTask == null &&	// 新任务为空，
+                   ! workQueue.isEmpty()))	// 工作队列不为空，此时返回false，执行下面得for执行任务
+                return false;
+
+            for (;;) {
+                int wc = workerCountOf(c);	// 工作线程得数量
+                if (wc >= CAPACITY || // wc大于最大容量，直接返回false
+                    wc >= (core ? corePoolSize : maximumPoolSize)) // 根据core
+                    return false;
+                if (compareAndIncrementWorkerCount(c)) // c数量+1
+                    break retry;
+                // cas更新失败，重新读一遍，c，因为有可能被其他改过
+                c = ctl.get();  // Re-read ctl 
+                if (runStateOf(c) != rs)  // 判断状态，重新执行
+                    continue retry;
+                // else CAS failed due to workerCount change; retry inner loop
+            }
+        }
+
+        boolean workerStarted = false;
+        boolean workerAdded = false;
+        Worker w = null;
+        try {
+            // 创建任务执行类，线程得包装
+            w = new Worker(firstTask);
+            final Thread t = w.thread;
+            if (t != null) {
+                final ReentrantLock mainLock = this.mainLock;
+                // 多线程，保证workers原子性
+                mainLock.lock();
+                try {
+                    // Recheck while holding lock.
+                    // Back out on ThreadFactory failure or if
+                    // shut down before lock acquired.
+                    int rs = runStateOf(ctl.get());
+
+                    if (rs < SHUTDOWN ||
+                        (rs == SHUTDOWN && firstTask == null)) {
+                        if (t.isAlive()) // precheck that t is startable
+                            throw new IllegalThreadStateException();
+                        workers.add(w);
+                        int s = workers.size();
+                        if (s > largestPoolSize)
+                            largestPoolSize = s;
+                        workerAdded = true;
+                    }
+                } finally {
+                    mainLock.unlock();
+                }
+                if (workerAdded) {
+                    t.start();		// 添加成功，运行work包装得run方法
+                    workerStarted = true;
+                }
+            }
+        } finally {
+            if (! workerStarted)
+                addWorkerFailed(w);	// 启动失败，从workers移除，并将c减1
+        }
+        return workerStarted;
+    }
+```
+
+### 2.2.3、核心方法-runWork
+
+```java
+final void runWorker(Worker w) {
+    Thread wt = Thread.currentThread();
+    Runnable task = w.firstTask;
+    w.firstTask = null;
+    w.unlock(); // allow interrupts,改变标志位，允许中断
+    boolean completedAbruptly = true;
+    try {
+        while (task != null || (task = getTask()) != null) { // 不为空，或去拿
+            w.lock();
+            // If pool is stopping, ensure thread is interrupted;
+            // if not, ensure thread is not interrupted.  This
+            // requires a recheck in second case to deal with
+            // shutdownNow race while clearing interrupt
+            // 检查状态，状态判断为true，那么就中断线程
+            if ((runStateAtLeast(ctl.get(), STOP) || // 任务已经被stop了，关闭了
+                 (Thread.interrupted() &&	// 清除标记位，任务是否被中断过
+                  runStateAtLeast(ctl.get(), STOP))) &&	// 
+                !wt.isInterrupted())		// 检查是否已经调用过，没有那么就调用下面中断
+                wt.interrupt();	// 直接中断线程
+            try {
+                beforeExecute(wt, task);
+                Throwable thrown = null;
+                try {
+                    task.run();
+                } catch (RuntimeException x) {
+                    thrown = x; throw x;
+                } catch (Error x) {
+                    thrown = x; throw x;
+                } catch (Throwable x) {
+                    thrown = x; throw new Error(x);
+                } finally {
+                    afterExecute(task, thrown); // 最后回调，
+                }
+            } finally {
+                task = null;
+                w.completedTasks++;
+                w.unlock();
+            }
+        }
+        completedAbruptly = false;
+    } finally {
+        processWorkerExit(w, completedAbruptly);
+    }
+}
+
+// Lock methods
+//
+// The value 0 represents the unlocked state.
+// The value 1 represents the locked state.
+ protected boolean isHeldExclusively() {
+     return getState() != 0;
+ }
+```
+
+
+
+### 2.2.4、核心方法-processWorkerExit
+
+```java
+// 只有在运行afterExecute或beforeExecute出现异常之后，completedAbruptly才为true
+private void processWorkerExit(Worker w, boolean completedAbruptly才为true) {
+    if (completedAbruptly) // If abrupt, then workerCount wasn't adjusted
+        decrementWorkerCount();	// 工作线程-1
+
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        completedTaskCount += w.completedTasks;
+        workers.remove(w); // 移除
+    } finally {
+        mainLock.unlock();
+    }
+
+    tryTerminate();
+
+    int c = ctl.get();
+    if (runStateLessThan(c, STOP)) {	// 当前状态是running或shutdown才为true
+        if (!completedAbruptly) {		// 是否是用户异常，
+            // 这里面代码，是为了保证至少有一个工作线程
+            int min = allowCoreThreadTimeOut ? 0 : corePoolSize;
+            if (min == 0 && ! workQueue.isEmpty())
+                min = 1; 	// 为了保证至少有一个工作线程
+            if (workerCountOf(c) >= min) // 如果没有一个线程，那么执行addWorker(null, false)
+                return; // replacement not needed
+        }
+        addWorker(null, false);			// 另起一个线程
+    }
+}
+```
+
+### 2.2.5、核心方法-tryTerminate();
+
+```java
+final void tryTerminate() {
+    for (;;) {
+        int c = ctl.get();
+        if (isRunning(c) ||	// 当前线程是否正在运行，
+            runStateAtLeast(c, TIDYING) ||	// 当前状态已经是TIDYING了
+            (runStateOf(c) == SHUTDOWN && ! workQueue.isEmpty()))	// 线程中断了，并且工作队列不为空，那么就不执行tryTerminate方法，直接返回
+            return;
+        // 如何workerCountOf为0，那么当前执行它的就是最后一个线程，那么就继续执行terminated
+        if (workerCountOf(c) != 0) { // Eligible to terminate
+            interruptIdleWorkers(ONLY_ONE); //确保只有一个线程执行terminated方法
+            return;
+        }
+
+        final ReentrantLock mainLock = this.mainLock;
+        mainLock.lock();
+        try {
+            if (ctl.compareAndSet(c, ctlOf(TIDYING, 0))) { //cas修改状态为TIDYING
+                try {
+                    terminated();
+                } finally {
+                    ctl.set(ctlOf(TERMINATED, 0));	// 执行完毕之后修改状态为TERMINATED
+                    termination.signalAll();	// 唤醒所有等待termination的方法
+                }
+                return;
+            }
+        } finally {
+            mainLock.unlock();
+        }
+        // else retry on failed CAS
+    }
+}
+```
+
+### 核心方法-shutdown
+
+```java
+public void shutdown() {
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        checkShutdownAccess();			// 检查权限，jdk自带，不需要研究
+        advanceRunState(SHUTDOWN状态);	// 设置SHUTDOWN状态
+        interruptIdleWorkers();			// 干掉空闲线程
+        onShutdown(); // hook for ScheduledThreadPoolExecutor，钩子函数用于扩展，在onShutdown之后做一些事情
+    } finally {
+        mainLock.unlock();
+    }
+    tryTerminate();
+}
+```
+
+### 核心方法-shutdownNow
+
+```java
+public List<Runnable> shutdownNow() {
+    List<Runnable> tasks;
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        checkShutdownAccess();
+        advanceRunState(STOP);	// 设置STOP状态
+        interruptWorkers();		// 中断任务
+        tasks = drainQueue();	// 取出未执行任务
+    } finally {
+        mainLock.unlock();
+    }
+    tryTerminate();
+    return tasks;
+}
+```
+
+```java
+/**
+ * Transitions runState to given target, or leaves it alone if
+ * already at least the given target.
+ *
+ * @param targetState the desired state, either SHUTDOWN or STOP
+ *        (but not TIDYING or TERMINATED -- use tryTerminate for that)
+ */
+private void advanceRunState(int targetState) {
+    // assert targetState == SHUTDOWN || targetState == STOP;
+    for (;;) {
+        int c = ctl.get();		// 拿到当前状态c
+        if (runStateAtLeast(c, targetState) ||	// c状态要大于targetState
+            ctl.compareAndSet(c, ctlOf(targetState, workerCountOf(c))))	// 使用cas,将c的工作线程数和state状态进行合并 | 运算
+            break;
+    }
+}
+```
+
+```java
+private void interruptIdleWorkers(boolean onlyOne) {
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        for (Worker w : workers) {
+            Thread t = w.thread;
+            if (!t.isInterrupted() && w.tryLock()) {	// 是否是空闲线程，是根据tryLock中状态判断，为0是，为1不是空闲
+                try {
+                    t.interrupt();
+                } catch (SecurityException ignore) {
+                } finally {
+                    w.unlock();
+                }
+            }
+            if (onlyOne)
+                break;
+        }
+    } finally {
+        mainLock.unlock();
+    }
+}
+```
+
+## 2.3、状态
+
+1. RUNNING
+
+   > Accept new tasks and process queued tasks
+   >
+   > 接收新任务，执行队列中任务
+
+2. SHUTDOWN
+
+   > Don't accept new tasks, but process queued tasks
+   >
+   > 不接受任务，执行队列任务
+
+3. STOP
+
+   > Don't accept new tasks, don't process queued tasks, and interrupt in-progress task
+   >
+   > 不接受任务，不执行队列中任务，中断正在执行的任务
+
+4. TIDYING
+
+   >  All tasks have terminated, workerCount is zero,the thread transitioning to state TIDYING will run the terminated() hook method.
+   >
+   > 所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
+
+5. TERMINATED
+
+   > terminated() has completed.
+   >
+   > 钩子函数执行完毕，状态为TERMINATED
+
+```java
+/*   RUNNING:  Accept new tasks and process queued tasks
+*   SHUTDOWN: Don't accept new tasks, but process queued tasks
+*   STOP:     Don't accept new tasks, don't process queued tasks,
+*             and interrupt in-progress tasks
+*   TIDYING:  All tasks have terminated, workerCount is zero,
+*             the thread transitioning to state TIDYING
+*             will run the terminated() hook method
+			所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
+*   TERMINATED: terminated() has completed
+			// 钩子函数执行完毕，状态为TERMINATED
+*/
+```
+
+钩子函数：
+
+> 执行完主方法之后，需要执行的钩子函数，将执行结果通过钩子函数通知调用者
 
 2、ThreadPoolExecutor线程池启动源码原理 
 
