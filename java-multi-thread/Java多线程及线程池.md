@@ -1161,11 +1161,427 @@ private void interruptIdleWorkers(boolean onlyOne) {
 
 ## 3、ScheduledThreadPoolExecutor
 
-5、ScheduledThreadPoolExecutor启动源码原理 
+### 3.1、线程调度存在的问题
 
-6、ScheduledThreadPoolExecutor线程池提交任务执行过程源码原理 
+因为调度线程中使用的是无界限队列，所以当添加的任务大于指定的核心线程数，那么会造成周期执行的任务或延迟任务会在线程数超级多的情况下，出现卡顿，甚至卡死的情况，**XXL-JOB使用该方法**进行分布式任务调度。
 
-7、ScheduledThreadPoolExecutor线程池关闭源码原理 
+**解决办法：**周期执行调度任务线程池中嵌套线程池，因为线程池有拒绝策略，来避免线程过多情况。
+
+```java
+ ExecutorService service = Executors.newFixedThreadPool(3);
+// 在只有一个核心线程数的情况下，同时运行了5个任务 
+ScheduledThreadPoolExecutor schedule = new ScheduledThreadPoolExecutor(1);
+ schedule.schedule(()->service.execute(()->{
+         System.out.println("xxx11" + Thread.currentThread().getName());
+ try {
+     Thread.sleep(5000);
+ }catch (Exception e){
+     e.printStackTrace();
+ }
+ }),1, TimeUnit.SECONDS);
+ schedule.schedule(()->service.execute(()->{
+     System.out.println("xxx12" + Thread.currentThread().getName());
+     try {
+         Thread.sleep(5000);
+     }catch (Exception e){
+         e.printStackTrace();
+     }
+ }),1, TimeUnit.SECONDS);
+ schedule.schedule(()->service.execute(()->{
+     System.out.println("xxx13" + Thread.currentThread().getName());
+     try {
+         Thread.sleep(5000);
+     }catch (Exception e){
+         e.printStackTrace();
+     }
+ }),1, TimeUnit.SECONDS);
+ schedule.schedule(()->service.execute(()->{
+     System.out.println("xxx14" + Thread.currentThread().getName());
+     try {
+         Thread.sleep(5000);
+     }catch (Exception e){
+         e.printStackTrace();
+     }
+ }),1, TimeUnit.SECONDS);
+```
+
+### 3.2、DelayedWorkQueue
+
+```java
+static class DelayedWorkQueue extends AbstractQueue<Runnable>
+        implements BlockingQueue<Runnable> {
+	private static final int INITIAL_CAPACITY = 16;
+	private RunnableScheduledFuture<?>[] queue =
+    new RunnableScheduledFuture<?>[INITIAL_CAPACITY];
+	private final ReentrantLock lock = new ReentrantLock();
+	private int size = 0;
+    
+}
+// 基于数组实现的小根堆任务队列
+```
+
+
+
+```java
+/**
+ * Sifts element added at bottom up to its heap-ordered spot.
+ * Call only when holding lock.
+ * 调整堆结构的插入方法
+ */
+private void siftUp(int k, RunnableScheduledFuture<?> key) {
+    while (k > 0) {
+        int parent = (k - 1) >>> 1;
+        RunnableScheduledFuture<?> e = queue[parent];
+        if (key.compareTo(e) >= 0)
+            break;
+        queue[k] = e;
+        setIndex(e, k);
+        k = parent;
+    }
+    queue[k] = key;
+    setIndex(key, k);
+}
+
+/**
+ * Sifts element added at top down to its heap-ordered spot.
+ * Call only when holding lock.
+ * 调整堆结构的下沉方法
+ */
+private void siftDown(int k, RunnableScheduledFuture<?> key) {
+    int half = size >>> 1;
+    while (k < half) {
+        int child = (k << 1) + 1;
+        RunnableScheduledFuture<?> c = queue[child];
+        int right = child + 1;
+        if (right < size && c.compareTo(queue[right]) > 0)
+            c = queue[child = right];
+        if (key.compareTo(c) <= 0)
+            break;
+        queue[k] = c;
+        setIndex(c, k);
+        k = child;
+    }
+    queue[k] = key;
+    setIndex(key, k);
+}
+```
+
+
+
+```java
+// 添加任务
+public boolean offer(Runnable x) {
+    if (x == null)
+        throw new NullPointerException();
+    RunnableScheduledFuture<?> e = (RunnableScheduledFuture<?>)x;
+    final ReentrantLock lock = this.lock;
+    lock.lock();
+    try {
+        int i = size;
+        if (i >= queue.length)
+            grow();
+        size = i + 1;
+        if (i == 0) {
+            queue[0] = e;
+            setIndex(e, 0);
+        } else {
+            siftUp(i, e);
+        }
+        if (queue[0] == e) { // 队列中0位置的元素是当前任务
+            leader = null;	// 重置leader
+            available.signal();	// 唤醒需要执行的任务线程
+        }
+    } finally {
+        lock.unlock();
+    }
+    return true;
+}
+```
+
+
+
+```java
+// 取出任务
+// 这个方法是ThreadPoolExecutor中调用的take方法，等待直到能够取出，然后执行
+public RunnableScheduledFuture<?> take() throws InterruptedException {
+            final ReentrantLock lock = this.lock;
+            lock.lockInterruptibly();
+            try {
+                for (;;) {
+                    RunnableScheduledFuture<?> first = queue[0];
+                    if (first == null)
+                        available.await();
+                    else {
+                        long delay = first.getDelay(NANOSECONDS);
+                        if (delay <= 0)	// 超时了
+                            return finishPoll(first);
+                        first = null; // don't retain ref while waiting
+                        if (leader != null)
+                            available.await();	// 等到执行时间到达
+                        else {
+                            Thread thisThread = Thread.currentThread();
+                            leader = thisThread;
+                            try {
+                                available.awaitNanos(delay);	//等待延迟delay时间后唤醒
+                            } finally {
+                                if (leader == thisThread)		
+                                    leader = null;			// 判断是否当前线程，最后将复原
+                            }
+                        }
+                    }
+                }
+            } finally {
+                if (leader == null && queue[0] != null)	// 队列中还有任务，leader已经执行了
+                    available.signal();					// 唤醒下一个线程执行队列中的任务
+                lock.unlock();
+            }
+   }
+```
+
+### 3.3、schedule
+
+该方法表示，任务延迟delay时间后执行。并且只执行一次
+
+```java
+public ScheduledFuture<?> schedule(Runnable command,
+                                   long delay,
+                                   TimeUnit unit) {
+    if (command == null || unit == null)
+        throw new NullPointerException();
+    RunnableScheduledFuture<?> t = decorateTask(command,
+        new ScheduledFutureTask<Void>(command, null,
+                                      triggerTime(delay, unit)));
+    delayedExecute(t);
+    return t;
+}
+```
+
+### 3.4、scheduleAtFixedRate
+
+该方法表示，任务是以固定延迟频率执行，不论该任务是否已经执行完毕。
+
+```java
+public ScheduledFuture<?> scheduleAtFixedRate(Runnable command,
+                                              long initialDelay,
+                                              long period,
+                                              TimeUnit unit) {
+    if (command == null || unit == null)
+        throw new NullPointerException();
+    if (period <= 0)
+        throw new IllegalArgumentException();
+    ScheduledFutureTask<Void> sft =
+        new ScheduledFutureTask<Void>(command,
+                                      null,
+                                      triggerTime(initialDelay, unit),
+                                      unit.toNanos(period));
+    RunnableScheduledFuture<Void> t = decorateTask(command, sft);
+    sft.outerTask = t;	// 拿到任务，赋给outerTask，以便于下次执行直接拿
+    delayedExecute(t);
+    return t;
+}
+```
+
+### 3.5、scheduleWithFixedDelay
+
+该方法表示，任务在当前任务执行完毕之后，以delay时间执行
+
+```java
+public ScheduledFuture<?> scheduleWithFixedDelay(Runnable command,
+                                                 long initialDelay,
+                                                 long delay,
+                                                 TimeUnit unit) {
+    if (command == null || unit == null)
+        throw new NullPointerException();
+    if (delay <= 0)
+        throw new IllegalArgumentException();
+    ScheduledFutureTask<Void> sft =
+        new ScheduledFutureTask<Void>(command,
+                                      null,
+                                      triggerTime(initialDelay, unit),
+                                      unit.toNanos(-delay));
+    RunnableScheduledFuture<Void> t = decorateTask(command, sft);
+    sft.outerTask = t;	// 拿到任务，赋给outerTask，以便于下次执行直接拿
+    delayedExecute(t);
+    return t;
+}
+```
+
+### 3.6、ScheduledFutureTask
+
+该方式是周期执行任务的包装体
+
+```java
+private class ScheduledFutureTask<V>
+        extends FutureTask<V> implements RunnableScheduledFuture<V> {
+
+    /** Sequence number to break ties FIFO */
+    private final long sequenceNumber;
+
+    /** The time the task is enabled to execute in nanoTime units */
+    private long time;
+
+    /**
+     * Period in nanoseconds for repeating tasks.  A positive
+     * value indicates fixed-rate execution.  A negative value
+     * indicates fixed-delay execution.  A value of 0 indicates a
+     * non-repeating task.
+     */
+    private final long period;
+
+    /** The actual task to be re-enqueued by reExecutePeriodic */
+    RunnableScheduledFuture<V> outerTask = this;
+
+    /**
+     * Index into delay queue, to support faster cancellation.
+     */
+    int heapIndex;
+
+    /**
+     * Creates a one-shot action with given nanoTime-based trigger time.
+     */
+    ScheduledFutureTask(Runnable r, V result, long ns) {
+        super(r, result);
+        this.time = ns;
+        this.period = 0;
+        this.sequenceNumber = sequencer.getAndIncrement();
+    }
+
+    /**
+     * Creates a periodic action with given nano time and period.
+     */
+    ScheduledFutureTask(Runnable r, V result, long ns, long period) {
+        super(r, result);
+        this.time = ns;
+        this.period = period;
+        this.sequenceNumber = sequencer.getAndIncrement();
+    }
+
+    /**
+     * Creates a one-shot action with given nanoTime-based trigger time.
+     */
+    ScheduledFutureTask(Callable<V> callable, long ns) {
+        super(callable);
+        this.time = ns;
+        this.period = 0;
+        this.sequenceNumber = sequencer.getAndIncrement();
+    }
+	// 拿到延迟任务时间
+    public long getDelay(TimeUnit unit) {
+        return unit.convert(time - now(), NANOSECONDS);
+    }
+	
+    // 用于放入小根堆结构的比较器
+    public int compareTo(Delayed other) {
+        if (other == this) // compare zero if same object
+            return 0;
+        if (other instanceof ScheduledFutureTask) {
+            ScheduledFutureTask<?> x = (ScheduledFutureTask<?>)other;
+            long diff = time - x.time;
+            if (diff < 0)
+                return -1;
+            else if (diff > 0)
+                return 1;
+            else if (sequenceNumber < x.sequenceNumber)
+                return -1;
+            else
+                return 1;
+        }
+        long diff = getDelay(NANOSECONDS) - other.getDelay(NANOSECONDS);
+        return (diff < 0) ? -1 : (diff > 0) ? 1 : 0;
+    }
+
+    /**
+     * Returns {@code true} if this is a periodic (not a one-shot) action.
+     *
+     * @return {@code true} if periodic
+     */
+    public boolean isPeriodic() {
+        return period != 0;
+    }
+
+    /**
+     * Sets the next time to run for a periodic task.
+     */
+    private void setNextRunTime() {	// 设置下次运行时间
+        long p = period;
+        if (p > 0)	// 是周期时间
+            time += p;
+        else
+            time = triggerTime(-p);
+    }
+
+    public boolean cancel(boolean mayInterruptIfRunning) {
+        boolean cancelled = super.cancel(mayInterruptIfRunning);
+        if (cancelled && removeOnCancel && heapIndex >= 0)
+            remove(this);
+        return cancelled;
+    }
+
+    /**
+     * Overrides FutureTask version so as to reset/requeue if periodic.
+     */
+    public void run() {
+        boolean periodic = isPeriodic();		// 是否是周期
+        if (!canRunInCurrentRunState(periodic))	// 检查线程池状态是否被shutdown了
+            cancel(false);						// 取消任务
+        else if (!periodic)						// 不是周期
+            ScheduledFutureTask.super.run();	// 那么直接执行一次
+        else if (ScheduledFutureTask.super.runAndReset()) {	// futureTask任务运行成功
+            setNextRunTime();								// 设置下次周期执行时间
+            reExecutePeriodic(outerTask);		// 重新运行outerTask，也就是我们传进来的任务
+        }
+    }
+}
+```
+
+### 3.7、delayedExecute
+
+该方法是实际调用RunnableScheduledFuture的run方法的入口
+
+```java
+private void delayedExecute(RunnableScheduledFuture<?> task) {
+    if (isShutdown())	// 检查状态，拒绝任务
+        reject(task);
+    else {
+        super.getQueue().add(task);		// 添加任务到当前的延迟队列
+        if (isShutdown() &&
+            !canRunInCurrentRunState(task.isPeriodic()) &&
+            remove(task))	// 状态不对，移除任务从队列
+            task.cancel(false);	// 取消任务
+        else
+            ensurePrestart();	// 从队列中拿任务，运行
+    }
+}
+```
+
+### 3.8、ensurePrestart
+
+```java
+void ensurePrestart() {
+    int wc = workerCountOf(ctl.get());	// 计算任务运行的数量
+    if (wc < corePoolSize)				// 小于核心线程数，那么从队列获取运行
+        addWorker(null, true);
+    else if (wc == 0)				// 核心线程数为0，且没有运行的任务
+        addWorker(null, false);		// 使用非核心线程数
+}
+```
+
+### 3.9、delayedExecute
+
+```java
+// 重新之心周期任务，跟delayedExecute方法类似
+void reExecutePeriodic(RunnableScheduledFuture<?> task) {
+    if (canRunInCurrentRunState(true)) {
+        super.getQueue().add(task);
+        if (!canRunInCurrentRunState(true) && remove(task))
+            task.cancel(false);
+        else
+            ensurePrestart();
+    }
+}
+```
+
+
 
 ## 4、ForkJoinPool
 
