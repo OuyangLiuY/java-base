@@ -2,27 +2,49 @@
 
 ## 1.1、Java线程实现方式
 
-1. **继承Thread**
+### 1.1.1、继承Thread
 
+1. **继承Thread**
 1. 定义Thread类的子类，并重写该类的run方法，该run方法的方法体就代表了线程要完成的任务。因此把run()方法称为执行体。
 2. 创建Thread子类的实例，即创建了线程对象。
 3. 调用线程对象的start()方法来启动该线程。
 
+### 1.1.2、实现runnable接口
+
+（1）定义runnable接口的实现类，并重写该接口的run()方法，该run()方法的方法体同样是该线程的线程执行体。
+
+（2）创建 Runnable实现类的实例，并以此实例作为Thread的target来创建Thread对象，该Thread对象才是真正的线程对象。
+
+（3）调用线程对象的start()方法来启动该线程。
+
+### 1.1.3、实现callable接口
+
+1）创建Callable接口的实现类，并实现call()方法，该call()方法将作为线程执行体，并且有返回值。
+       public interface Callable{
+　　      V call() throws Exception; }
+2）创建Callable实现类的实例，使用FutureTask类来包装Callable对象，该FutureTask对象封装了该Callable对象的call()方法的返回值。（FutureTask是一个包装器，它通过接受Callable来创建，它同时实现了Future和Runnable接口）
+3）使用FutureTask对象作为Thread对象的target创建并启动新线程。
+4）调用FutureTask对象的get()方法来获得子线程执行结束后的返回值。
+
 ```java
-public class DemoThread extends Thread{  
-    public void run() {  
-        System.out.println(“hello”);  
-    }  
+public class Demo implements Callable<Integer>  {  
+  
     public static void main(String[] args)  
     {  
-         new DemoThread().start();  
+        Demo demo = new Demo ();  
+        FutureTask<Integer> ft = new FutureTask<>(demo); 
+        new Thread(ft ,"有返回值的线程").start();
+        ft.get();
+    } 
+    @Override  
+    public Integer call() throws Exception  
+    {  
+          return 1;  
     }  
 }
 ```
 
-2、实现runnable接口
 
-3、实现callable接口
 
 ## 1.2、常用线程池体系 
 
@@ -36,8 +58,6 @@ public class DemoThread extends Thread{
 8. Executors：线程池工具类，定义了一些快速实现线程池的方法
 
 ### 1.2.1、Executor
-
-
 
 ```java
 public interface Executor {
@@ -172,92 +192,7 @@ public interface ExecutorService extends Executor {
         throws InterruptedException, ExecutionException, TimeoutException;
 ```
 
-### 12.3、AbstractExecutorService
-
-#### 12.3.1、inovkeAny
-
-总结：inovkeAny会出现执行多个任务，但只取第一个任务结果的情况，原理如下：
-
-```java
- /**
-     * the main mechanics of invokeAny.
-     */
-    private <T> T doInvokeAny(Collection<? extends Callable<T>> tasks,
-                              boolean timed, long nanos)
-        throws InterruptedException, ExecutionException, TimeoutException {
-        if (tasks == null)
-            throw new NullPointerException();
-        int ntasks = tasks.size();
-        if (ntasks == 0)
-            throw new IllegalArgumentException();
-        ArrayList<Future<T>> futures = new ArrayList<>(ntasks);
-        // 将this对象放入ecs中使用ecs，完成任务执行
-        ExecutorCompletionService<T> ecs =
-            new ExecutorCompletionService<T>(this);
-
-        // For efficiency, especially in executors with limited
-        // parallelism, check to see if previously submitted tasks are
-        // done before submitting more of them. This interleaving
-        // plus the exception mechanics account for messiness of main
-        // loop.
-
-        try {
-            // Record exceptions so that if we fail to obtain any
-            // result, we can throw the last exception we got.
-            ExecutionException ee = null;
-            // 判断一下是否是timed超时执行
-            final long deadline = timed ? System.nanoTime() + nanos : 0L;
-            Iterator<? extends Callable<T>> it = tasks.iterator();
-
-            // Start one task for sure; the rest incrementally
-           
-            futures.add(ecs.submit(it.next()));  // 第一次执行
-            --ntasks; 
-            int active = 1;	
-
-            for (;;) {
-                Future<T> f = ecs.poll(); // 从阻塞队列中拿出上面添加的任务，刚提交，未执行完毕，所以此时返回null
-                if (f == null) {	// 为null，
-                    if (ntasks > 0) {	// 继续获取下一个任务
-                        --ntasks;
-                        futures.add(ecs.submit(it.next()));	// 执行
-                        ++active;
-                    }
-                    else if (active == 0)
-                        break;
-                    else if (timed) {
-                        f = ecs.poll(nanos, NANOSECONDS);
-                        if (f == null)
-                            throw new TimeoutException();
-                        nanos = deadline - System.nanoTime();
-                    }
-                    else
-                        f = ecs.take();
-                }
-                if (f != null) { // 第二次for循环进来，第一个任务f执行完毕不为空
-                    --active;	// 激活线程数--
-                    try {
-                        return f.get();	// 拿到第一个任务的返回值
-                    } catch (ExecutionException eex) {
-                        ee = eex;
-                    } catch (RuntimeException rex) {
-                        ee = new ExecutionException(rex);
-                    }
-                }
-            }
-
-            if (ee == null)
-                ee = new ExecutionException();
-            throw ee;
-
-        } finally {
-            // 执行完第一个任务，取消之后的任务
-            cancelAll(futures);
-        }
-    }
-```
-
-
+### 1.2.3、AbstractExecutorService
 
 ```java
 
@@ -477,6 +412,14 @@ public abstract class AbstractExecutorService implements ExecutorService {
 }
 ```
 
+#### 1.2.3.1、inovkeAny
+
+总结：inovkeAny会出现执行多个任务，但只取第一个任务结果的情况
+
+#### 1.2.3.2、invokeAll
+
+总结：执行所有的方法，并返回所有的执行结果
+
 ### 1.2.4、ExecutorCompletionService
 
 ```java
@@ -597,6 +540,81 @@ public class ExecutorCompletionService<V> implements CompletionService<V> {
 ### 2.1、ThreadPoolExecutor原理
 
 ![](../doc-all/images/TPE.png)
+
+
+
+### 2.2、线程池的状态设计
+
+1. RUNNING
+
+   > Accept new tasks and process queued tasks
+   >
+   > 接收新任务，执行队列中任务
+
+2. SHUTDOWN
+
+   > Don't accept new tasks, but process queued tasks
+   >
+   > 不接受任务，执行队列任务
+
+3. STOP
+
+   > Don't accept new tasks, don't process queued tasks, and interrupt in-progress task
+   >
+   > 不接受任务，不执行队列中任务，中断正在执行的任务
+
+4. TIDYING
+
+   >  All tasks have terminated, workerCount is zero,the thread transitioning to state TIDYING will run the terminated() hook method.
+   >
+   >  所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
+
+5. TERMINATED
+
+   > terminated() has completed.
+   >
+   > 钩子函数执行完毕，状态为TERMINATED
+
+```java
+/*   RUNNING:  Accept new tasks and process queued tasks
+*   SHUTDOWN: Don't accept new tasks, but process queued tasks
+*   STOP:     Don't accept new tasks, don't process queued tasks,
+*             and interrupt in-progress tasks
+*   TIDYING:  All tasks have terminated, workerCount is zero,
+*             the thread transitioning to state TIDYING
+*             will run the terminated() hook method
+			所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
+*   TERMINATED: terminated() has completed
+			// 钩子函数执行完毕，状态为TERMINATED
+*/
+```
+
+**钩子函数：**
+
+> 执行完主方法之后，需要执行的钩子函数，将执行结果通过钩子函数通知调用者
+
+**使用int的高三位来表示运行的状态，其他位代笔线程运行数据**
+
+```java
+private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
+private static final int COUNT_BITS = Integer.SIZE - 3;
+private static final int COUNT_MASK = (1 << COUNT_BITS) - 1;
+// runState is stored in the high-order bits
+private static final int RUNNING    = -1 << COUNT_BITS;		// 111 00..
+private static final int SHUTDOWN   =  0 << COUNT_BITS;		// 000 00..
+private static final int STOP       =  1 << COUNT_BITS;		// 001 00..
+private static final int TIDYING    =  2 << COUNT_BITS;		// 010 00..
+private static final int TERMINATED =  3 << COUNT_BITS;		// 011 00..
+```
+
+思考：为什么这样设计
+
+> 此时只有ctl小于0，说明线程是在运行中的。条件判断非常方便。
+>
+> ```c
+> if(ctl<0)
+> 	doSomething();
+> ```
 
 ### 2.2、ThreadPoolExecutor核心方法
 
@@ -724,8 +742,6 @@ public static class CallerRunsPolicy implements RejectedExecutionHandler {
 
 #### 2.2.2、ThreadFactory
 
-
-
 ```java
 public interface ThreadFactory {
 
@@ -772,29 +788,6 @@ private static class DefaultThreadFactory implements ThreadFactory {
 
 线程核心原理
 
-使用int的高三位来表示运行的状态
-
-```java
-private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
-private static final int COUNT_BITS = Integer.SIZE - 3;
-private static final int COUNT_MASK = (1 << COUNT_BITS) - 1;
-// runState is stored in the high-order bits
-private static final int RUNNING    = -1 << COUNT_BITS;		// 111 00..
-private static final int SHUTDOWN   =  0 << COUNT_BITS;		// 000 00..
-private static final int STOP       =  1 << COUNT_BITS;		// 001 00..
-private static final int TIDYING    =  2 << COUNT_BITS;		// 010 00..
-private static final int TERMINATED =  3 << COUNT_BITS;		// 011 00..
-```
-
-思考：为什么这样设计
-
-> 此时只有ctl小于0，说明线程是在运行中的。条件判断非常方便。
->
-> ```c
->  if(ctl<0)
-> 	doSomething();
-> ```
-
 
 
 阻塞队列
@@ -812,7 +805,14 @@ public interface BlockingQueue<E> extends Queue<E> {
 
 
 
-### 2.2.2、核心方法-execute
+#### 2.2.3、execute
+
+总结：核心方法主要有以下步骤
+
+1. 如果运行的线程数小于核心线程数，那么就新增一个核心线程去执行任务
+2. 如果从队列中拿到一个任务，并重新检测状态，使用核心线程数去执行任务
+3. 如果任务不能加入到队列中，那么尝试新启动一个线程去执行，这个线程是非核心线程数
+4. 如果队列满了，运行的线程数已经是最大线程数了，那么就执行拒绝策略
 
 ```java
 public void execute(Runnable command) {
@@ -859,7 +859,9 @@ public void execute(Runnable command) {
 }
 ```
 
-### 2.2.3、核心方法-addWorker
+#### 2.2.4、addWorker
+
+新增线程实际执行体Worker方法，添加成功，就执行。
 
 ```java
  private boolean addWorker(Runnable firstTask, boolean core) {
@@ -934,7 +936,9 @@ public void execute(Runnable command) {
     }
 ```
 
-### 2.2.3、核心方法-runWork
+#### 2.2.5、runWork
+
+从队列中拿到任务，并运行
 
 ```java
 final void runWorker(Worker w) {
@@ -993,7 +997,9 @@ final void runWorker(Worker w) {
 
 
 
-### 2.2.4、核心方法-processWorkerExit
+#### 2.2.6、processWorkerExit
+
+在runWork中的实际任务执行结束之后运行，修改线程的状态并执行回调函数。
 
 ```java
 // 只有在运行afterExecute或beforeExecute出现异常之后，completedAbruptly才为true
@@ -1027,7 +1033,9 @@ private void processWorkerExit(Worker w, boolean completedAbruptly才为true) {
 }
 ```
 
-### 2.2.5、核心方法-tryTerminate();
+#### 2.2.7、tryTerminate()
+
+任务执行结束之后的钩子函数，修改状态，执行terminated回调方法
 
 ```java
 final void tryTerminate() {
@@ -1063,7 +1071,9 @@ final void tryTerminate() {
 }
 ```
 
-### 核心方法-shutdown
+#### 2.2.8、shutdown
+
+设置线程SHUTDOWN状态，结束空闲线程，并不再接收新的任务，等待线程池的任务执行完毕
 
 ```java
 public void shutdown() {
@@ -1071,7 +1081,7 @@ public void shutdown() {
     mainLock.lock();
     try {
         checkShutdownAccess();			// 检查权限，jdk自带，不需要研究
-        advanceRunState(SHUTDOWN状态);	// 设置SHUTDOWN状态
+        advanceRunState(SHUTDOWN);	// 设置SHUTDOWN状态
         interruptIdleWorkers();			// 干掉空闲线程
         onShutdown(); // hook for ScheduledThreadPoolExecutor，钩子函数用于扩展，在onShutdown之后做一些事情
     } finally {
@@ -1081,7 +1091,9 @@ public void shutdown() {
 }
 ```
 
-### 核心方法-shutdownNow
+#### 2.2.9、shutdownNow
+
+设置线程STOP状态，中断正在执行的任务，返回未执行的任务。
 
 ```java
 public List<Runnable> shutdownNow() {
@@ -1120,6 +1132,8 @@ private void advanceRunState(int targetState) {
 }
 ```
 
+中断空闲线程
+
 ```java
 private void interruptIdleWorkers(boolean onlyOne) {
     final ReentrantLock mainLock = this.mainLock;
@@ -1127,7 +1141,8 @@ private void interruptIdleWorkers(boolean onlyOne) {
     try {
         for (Worker w : workers) {
             Thread t = w.thread;
-            if (!t.isInterrupted() && w.tryLock()) {	// 是否是空闲线程，是根据tryLock中状态判断，为0是，为1不是空闲
+            // 是否是空闲线程，是根据tryLock中状态判断，为0是，为1不是空闲
+            if (!t.isInterrupted() && w.tryLock()) {	// cas 更新成功说明线程未被持有
                 try {
                     t.interrupt();
                 } catch (SecurityException ignore) {
@@ -1143,62 +1158,6 @@ private void interruptIdleWorkers(boolean onlyOne) {
     }
 }
 ```
-
-## 2.3、状态
-
-1. RUNNING
-
-   > Accept new tasks and process queued tasks
-   >
-   > 接收新任务，执行队列中任务
-
-2. SHUTDOWN
-
-   > Don't accept new tasks, but process queued tasks
-   >
-   > 不接受任务，执行队列任务
-
-3. STOP
-
-   > Don't accept new tasks, don't process queued tasks, and interrupt in-progress task
-   >
-   > 不接受任务，不执行队列中任务，中断正在执行的任务
-
-4. TIDYING
-
-   >  All tasks have terminated, workerCount is zero,the thread transitioning to state TIDYING will run the terminated() hook method.
-   >
-   > 所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
-
-5. TERMINATED
-
-   > terminated() has completed.
-   >
-   > 钩子函数执行完毕，状态为TERMINATED
-
-```java
-/*   RUNNING:  Accept new tasks and process queued tasks
-*   SHUTDOWN: Don't accept new tasks, but process queued tasks
-*   STOP:     Don't accept new tasks, don't process queued tasks,
-*             and interrupt in-progress tasks
-*   TIDYING:  All tasks have terminated, workerCount is zero,
-*             the thread transitioning to state TIDYING
-*             will run the terminated() hook method
-			所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
-*   TERMINATED: terminated() has completed
-			// 钩子函数执行完毕，状态为TERMINATED
-*/
-```
-
-钩子函数：
-
-> 执行完主方法之后，需要执行的钩子函数，将执行结果通过钩子函数通知调用者
-
-2、ThreadPoolExecutor线程池启动源码原理 
-
-3、ThreadPoolExecutor线程池提交任务执行过程源码原理
-
-4、ThreadPoolExecutor线程池关闭源码原理 
 
 ## 3、ScheduledThreadPoolExecutor
 
