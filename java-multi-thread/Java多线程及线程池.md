@@ -618,7 +618,7 @@ private static final int TERMINATED =  3 << COUNT_BITS;		// 011 00..
 
 ### 2.2、ThreadPoolExecutor核心方法
 
-#### 2.2.1、ThreadPoolExecutor拒绝策略
+#### 2.2.1、拒绝策略
 
 ThreadPoolExecutor中有默认四种拒绝策略实现，具体如下：
 
@@ -1584,6 +1584,235 @@ void reExecutePeriodic(RunnableScheduledFuture<?> task) {
 
 
 ## 4、ForkJoinPool
+
+### 4.1、submit
+
+```java
+// 将任务封装成FJT，因为FJT只执行自己的任务
+public ForkJoinTask<?> submit(Runnable task) {
+    if (task == null)
+        throw new NullPointerException();
+    ForkJoinTask<?> job;
+    if (task instanceof ForkJoinTask<?>) // avoid re-wrap
+        job = (ForkJoinTask<?>) task;
+    else
+        job = new ForkJoinTask.AdaptedRunnableAction(task);
+    externalPush(job);	// 核心方法
+    return job;
+}
+```
+
+### 4.2、externalPush
+
+```java
+final void externalPush(ForkJoinTask<?> task) {
+    WorkQueue[] ws; WorkQueue q; int m;
+    int r = ThreadLocalRandom.getProbe();	// 取TLR的随机数种子，线程安全的取
+    int rs = runState;						// 当前线程FJP的运行状态
+    // 第一次进来，workQueue为空
+    if ((ws = workQueues) != null && (m = (ws.length - 1)) >= 0 &&
+        (q = ws[m & r & SQMASK]) != null && r != 0 && rs > 0 &&
+        U.compareAndSwapInt(q, QLOCK, 0, 1)) {
+        ForkJoinTask<?>[] a; int am, n, s;
+        if ((a = q.array) != null &&
+            (am = a.length - 1) > (n = (s = q.top) - q.base)) {
+            int j = ((am & s) << ASHIFT) + ABASE;
+            U.putOrderedObject(a, j, task);
+            U.putOrderedInt(q, QTOP, s + 1);
+            U.putIntVolatile(q, QLOCK, 0);
+            if (n <= 1)
+                signalWork(ws, q);
+            return;
+        }
+        U.compareAndSwapInt(q, QLOCK, 1, 0);
+    }
+    // 真正执行提交任务的方法
+    externalSubmit(task); 
+}
+```
+
+### 4.3、externalSubmit
+
+总结：
+
+1. 初始化workQueues队列
+2. 负载均衡，获取队列中的任务，执行
+3. 初始化完成，切负载均衡到的队列位置没有任务，且线程池rs持有锁，说明有任务在执行，那么此时设置move为true，修改r随机值，让其负载均衡到有任务的位置
+
+```java
+private void externalSubmit(ForkJoinTask<?> task) {
+    int r;                                    // initialize caller's probe
+    if ((r = ThreadLocalRandom.getProbe()) == 0) {	// 取随机数
+        ThreadLocalRandom.localInit();
+        r = ThreadLocalRandom.getProbe();
+    }
+    for (;;) {
+        WorkQueue[] ws; WorkQueue q; int rs, m, k;
+        boolean move = false;
+        if ((rs = runState) < 0) {	// 判断线程池是否已经关闭
+            tryTerminate(false, false);     // help terminate
+            throw new RejectedExecutionException();
+        }
+        // STARTED状态没有赋值，需要初始化
+        else if ((rs & STARTED) == 0 ||     // initialize
+                 ((ws = workQueues) == null || (m = ws.length - 1) < 0)) {	// workQueue未初始化
+            // 注意：如果该分支不执行，但是由于||运算符的存在，这里ws和m变量已初始化
+            int ns = 0;
+            rs = lockRunState();
+            try {
+                if ((rs & STARTED) == 0) { // 再次判断了一下STARTED的状态位，为何，因为多线程操作的，可能线程初始化了，所以没有必要再进行CAS
+                 
+                    U.compareAndSwapObject(this, STEALCOUNTER, null,
+                                           new AtomicLong());
+                    // create workQueues array with size a power of two
+                    // p是并行度，工作线程的数量
+                    int p = config & SMASK; // ensure at least 4 slots
+                    int n = (p > 1) ? p - 1 : 1; // n最小是1，那么n运行下面代码之后是4
+                    // 就是传入的数，取它最近的2的倍数
+                    // 将当前数的右边的二进制位，全部赋予1
+                    n |= n >>> 1; n |= n >>> 2;  n |= n >>> 4;
+                    n |= n >>> 8; n |= n >>> 16; n = (n + 1) << 1;
+                    // 最后再加个1，那么就是它最近的2的倍数
+                    workQueues = new WorkQueue[n];
+                    ns = STARTED;	// 设置状态，初始化成功，此时状态为STARTED
+                }
+            } finally {
+                unlockRunState(rs, (rs & ~RSLOCK) | ns); // 释放锁
+            }
+        }
+        else if ((q = ws[k = r & m & SQMASK]) != null) {// 线程初始化，之后ws不为空
+            if (q.qlock == 0 && U.compareAndSwapInt(q, QLOCK, 0, 1)) {
+                ForkJoinTask<?>[] a = q.array;
+                int s = q.top;
+                boolean submitted = false; // initial submission or resizing
+                try {                      // locked version of push
+                    if ((a != null && a.length > s + 1 - q.base) ||
+                        (a = q.growArray()) != null) {
+                        int j = (((a.length - 1) & s) << ASHIFT) + ABASE;
+                        U.putOrderedObject(a, j, task);
+                        U.putOrderedInt(q, QTOP, s + 1);
+                        submitted = true;
+                    }
+                } finally {
+                    U.compareAndSwapInt(q, QLOCK, 1, 0);
+                }
+                if (submitted) {
+                    signalWork(ws, q);
+                    return;
+                }
+            }
+            move = true;                   // move on failure
+        }
+        else if (((rs = runState) & RSLOCK) == 0) { // create new queue
+            q = new WorkQueue(this, null);
+            q.hint = r;
+            q.config = k | SHARED_QUEUE;
+            q.scanState = INACTIVE;
+            rs = lockRunState();           // publish index
+            if (rs > 0 &&  (ws = workQueues) != null &&
+                k < ws.length && ws[k] == null)
+                ws[k] = q;                 // else terminated
+            unlockRunState(rs, rs & ~RSLOCK);
+        }
+        else	// 初始化成功，当前自己的队列任务为空，切线程已经持有了锁，那么就move=ture，修改r，让其重新负载均衡到其他ws队列去尝试执行
+            move = true;                   // move if busy
+        if (move)
+            r = ThreadLocalRandom.advanceProbe(r);
+    }
+}
+```
+
+### 4.4、lockRunState
+
+```java
+private int lockRunState() {
+    int rs;
+    // 该方法不是一进来就cas，如果有锁，那么就等待
+    // 如果没有锁，那么再去cas，因为cas有开销
+    // 一上来判断锁状态，就是一个优化
+    return ((((rs = runState) & RSLOCK) != 0 	// 因为不为0，已经有线程持有了锁
+             ||!U.compareAndSwapInt(this, RUNSTATE, rs, rs |= RSLOCK)) ?	// 无锁的话，CAS获取
+            awaitRunStateLock() : rs);
+}
+```
+
+### 4.5、awaitRunStateLock
+
+```java
+private int awaitRunStateLock() {
+    Object lock;
+    boolean wasInterrupted = false;
+    // SPINS 自旋，
+    //  private static final int SPINS  = 0; 默认为0
+    for (int spins = SPINS, r = 0, rs, ns;;) {
+        // 锁已经释放，其他线程cas去争取锁
+        if (((rs = runState) & RSLOCK) == 0) {	// 没有锁，使用cas获取
+            if (U.compareAndSwapInt(this, RUNSTATE, rs, ns = rs | RSLOCK)) {
+                if (wasInterrupted) {
+                    try {
+                        Thread.currentThread().interrupt();
+                    } catch (SecurityException ignore) {
+                    }
+                }
+                return ns;	// 此时上锁成功，返回上锁成功的状态ns
+            }
+        }
+        else if (r == 0)	// 初始化随机数
+            r = ThreadLocalRandom.nextSecondarySeed();
+        else if (spins > 0) { // 随机，减少自旋次数
+            r ^= r << 6; r ^= r >>> 21; r ^= r << 7; // xorshift，异或随机数
+            if (r >= 0)
+                --spins;
+        }
+        else if ((rs & STARTED) == 0 || (lock = stealCounter) == null)
+            // 由于当前rs的STARTED状态为0，代表了，当前FJP没有任务运行，那么没有必要再去睡眠了，因为这个状态维持时间非常短
+            Thread.yield();   // initialization race
+        else if (U.compareAndSwapInt(this, RUNSTATE, rs, rs | RSIGNAL)) {
+            // 这里不能只睡眠，需要有人唤醒，所以这里必须置位 RSIGNAL 唤醒位，提示另外的线程需要唤醒它
+            synchronized (lock) {
+                if ((runState & RSIGNAL) != 0) {	// 检查一下RSIGNAL状态不为0，那么就等待，因为其他线程已经修改了runState这个状态
+                    try {
+                        lock.wait();
+                    } catch (InterruptedException ie) {
+                        if (!(Thread.currentThread() instanceof
+                              ForkJoinWorkerThread))
+                            wasInterrupted = true;
+                    }
+                }
+                else
+                    lock.notifyAll();	// 否则就唤醒其他线程继续操作
+            }
+        }
+    }
+}
+```
+
+### 4.6、unlockRunState
+
+注意：此时oldRunState就是externalSubmit方法中的rs，有如下情况：
+
+1. 在lockRunState获取锁方法中，已经有锁，那么就去awaitRunStateLock方法等待，方法可以获取新锁标记，此时lockRunState方法返回的是具有锁标记的rs。
+
+   rs=RSLOCK，=》unlockRunState中cas**修改全局状态成功**，此时没有等待线程，所以无需唤醒
+
+2. 在awaitRunStateLock方法中，还有可能，rs状态带上了RSIGNAL状态位，那么此时lockRunState方法返回的是具有锁标记和RSIGNAL状态位的rs
+
+   rs=RSLOCK+RSIGNAL，有锁和RSIGNAL状态，=》**此时CAS失败**，肯定有等待的线程，需要唤醒
+
+```java
+// 解锁
+private void unlockRunState(int oldRunState, int newRunState) {
+    // rs状态更新失败，说明当前的状态
+    // 注意此方法CAS成功和失败的几种情况
+    if (!U.compareAndSwapInt(this, RUNSTATE, oldRunState, newRunState)) {
+        Object lock = stealCounter;
+        // 清除了RSIGNAL标志位，解锁成功，唤醒其他线程去争锁
+        runState = newRunState;              // clears RSIGNAL bit
+        if (lock != null)
+            synchronized (lock) { lock.notifyAll(); }
+    }
+}
+```
 
 8、ForkJoinPool设计理念与普通线程池区别与联系 
 
