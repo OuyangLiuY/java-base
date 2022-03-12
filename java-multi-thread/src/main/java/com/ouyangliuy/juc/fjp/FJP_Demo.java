@@ -1,5 +1,6 @@
 package com.ouyangliuy.juc.fjp;
 
+
 import java.sql.Time;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,17 @@ public class FJP_Demo {
         n = (n + 1) << 1;
         System.out.println(n);
 
+        System.out.println(Integer.toBinaryString(1<<31));
+        System.out.println(Integer.toBinaryString((1<<31)-1));
+        System.out.println(Integer.toBinaryString(-1));
+        System.out.println(1<<31);
+        System.out.println((1<<31)-1);
+
+
+       long ADD_WORKER = 0x0001L << (32 + 15); //
+
+        System.out.println(ADD_WORKER);
+        System.out.println(Long.toBinaryString(ADD_WORKER));
 
     }
 }

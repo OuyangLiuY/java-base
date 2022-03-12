@@ -1680,46 +1680,566 @@ private void externalSubmit(ForkJoinTask<?> task) {
                 unlockRunState(rs, (rs & ~RSLOCK) | ns); // 释放锁
             }
         }
+        // 上一个分支执行完毕，第二次for循环会进入到这里
+        // SQMASK = 111 1110 = 126，所以由SQMASK前面的1来限定长度，末尾的0来表明，外部提交队列一定在偶数位
         else if ((q = ws[k = r & m & SQMASK]) != null) {// 线程初始化，之后ws不为空
+            // 两个队列：外部队列，内部队列（任务窃取队列），那么这时，需要找到我这个任务需要放到那个外部提价队列里面。通过上面获取的随机种子r
+            // 由于当前提交的队列是外部队列，那么一定会有多线程操作，那么为了保证并发安全，那么这里需要上锁，也即对当前提交队列进行锁定
             if (q.qlock == 0 && U.compareAndSwapInt(q, QLOCK, 0, 1)) {
-                ForkJoinTask<?>[] a = q.array;
-                int s = q.top;
+                ForkJoinTask<?>[] a = q.array;	// 取提交队列的保存任务的数组arry
+                int s = q.top;	// 从 top往下放，类似于压栈过程，而栈顶指针就叫sp（stack pointer）
                 boolean submitted = false; // initial submission or resizing
                 try {                      // locked version of push
-                    if ((a != null && a.length > s + 1 - q.base) ||
-                        (a = q.growArray()) != null) {
-                        int j = (((a.length - 1) & s) << ASHIFT) + ABASE;
-                        U.putOrderedObject(a, j, task);
-                        U.putOrderedInt(q, QTOP, s + 1);
+                    if ((a != null 	// 任务数组已经初始化
+                         && a.length > s + 1 - q.base) ||	// 继续判断数组是否已经满了，+1是因为此时要放入一个任务，看看容量是不是够的
+                        (a = q.growArray()) != null) {	// 那么就初始化数组或扩容
+                        // (a.length - 1) & s) << ASHIFT) 算出偏移量+ABASE = 绝对地址 
+                        int j = (((a.length - 1) & s) << ASHIFT) + ABASE; // j就是s，也就是栈顶的绝对地址
+                        U.putOrderedObject(a, j, task);	// 先放任务
+                        U.putOrderedInt(q, QTOP, s + 1);	// 再对栈顶指针+1，s位置永远指向的是下一个空的可以放入任务的位置
+                        // QTOP
                         submitted = true;
                     }
                 } finally {
-                    U.compareAndSwapInt(q, QLOCK, 1, 0);
+                    U.compareAndSwapInt(q, QLOCK, 1, 0); // QLOCK是volatile修饰，由于volatile的特性，这个操作CAS出去，那么QLOCK线程可见，必然上面的task和qtop可见，且有序
                 }
+               
                 if (submitted) {
+                    // 此时任务添加成功，但是没有工作线程，那么这时通过signalWork，创建工作线程并执行
                     signalWork(ws, q);
                     return;
                 }
             }
+            // 由于当前线程无法获取初始计算的提交队列的锁，那么这时发生了锁竞争，那么设置move标记位，让线程在一些词循环的时候，重新计算随机数，让它寻找另外的队列。
             move = true;                   // move on failure
         }
         else if (((rs = runState) & RSLOCK) == 0) { // create new queue
-            q = new WorkQueue(this, null);
-            q.hint = r;
-            q.config = k | SHARED_QUEUE;
-            q.scanState = INACTIVE;
-            rs = lockRunState();           // publish index
+            // 如果找到的wq没有被创建，那么创建他，但是，这里的RSLOCK的判断，在于当没有别的线程持有RSLOCK的时候，才会进入，由于RSLOCK是管的runState，可能有别的的线程把状态改了，根本不需要再继续work了
+            q = new WorkQueue(this, null);	// 创建外部提交队列，由于ForkJoinWorkerThread为null，所以为外部提交队列
+            q.hint = r;	// 保存r，通过r找到外部提交队列，查找WQS的索引小标
+            q.config = k | SHARED_QUEUE; // SHARED_QUEUE代表当前队列是共享队列，也即外部队列，而k为当前wa处于wqs中索引下标
+            q.scanState = INACTIVE;	// 由于当前wa并没有进行扫描任务，所以扫描状态设置为无效位INACTIVE
+            rs = lockRunState(); // 对wqs上锁操作：就是将上面的队列放入到wqs的偶数位中
             if (rs > 0 &&  (ws = workQueues) != null &&
-                k < ws.length && ws[k] == null)
-                ws[k] = q;                 // else terminated
+                k < ws.length && ws[k] == null) // 由于可能两个线程同时进来，那么只有一个线程放创建的队列，但是这里需要注意的是：可能会有多个线程创建了WorkQueue，单是只有一个能放入成功
+                ws[k] = q;                 // 将wq放入到全局的wqs中
             unlockRunState(rs, rs & ~RSLOCK);
         }
-        else	// 初始化成功，当前自己的队列任务为空，切线程已经持有了锁，那么就move=ture，修改r，让其重新负载均衡到其他ws队列去尝试执行
-            move = true;                   // move if busy
+        else	// 初始化成功，当前自己的队列任务为空，且线程已经持有了锁，那么就move=ture，修改r，让其重新负载均衡到其他ws队列去尝试执行
+            move = true;   // 发生竞争时，允许当前线程选取其他的wq来重试
         if (move)
             r = ThreadLocalRandom.advanceProbe(r);
     }
 }
+```
+
+问题：为什么要使用putOrderedObject和putOrderedInt更新队列和s位置？
+
+> ```java
+> // 由于CPU中数据写入到cache中，开发人员觉得太慢，所以将数据先暂时存放到CPU内部的一个buffer中，这个buffer叫做store buffer，然后批量写入cache，增加性能。
+> U.putOrderedObject(a, j, task);
+> U.putOrderedInt(q, QTOP, s + 1);
+> // 保证s被其他线程看到的时候，taks也一定能够被看到，也即task和QTOP不会发生写写storestore重排序
+> ```
+
+
+
+#### 4.3.1、store buffer原理
+
+![](../doc-all/images/muti-thread/cpu_storebuffer.png)
+
+#### 4.3.2、volatile 关键字
+
+> volatile 的可见性并不是它的主要作用，为什么，因为store buffer非常小，最终由于CPU不断执行指令，会将最终的值刷入缓存，这时MESI生效，别的CPU能看到。
+>
+> Java中的 volatile最大作用就是**禁止JIT优化和指令屏障**。
+
+#### 4.3.3、取余数优化
+
+在一个数组中，用一个无线增长的数组arr，使用s来代表他当前的容量，那么使用`s%arr.length`可以在不管s当前的数是多大的情况下知道此时s所映射到数组位置下的idx；
+
+但是计算机对于取余数运算的开销是比较大的，相比于位运算来说，
+
+此时我们可以当数组的长度是固定2的幂次方的情况下，使用 `s & (arr.length - 1)` 即可求出当前s所映射到数组上的索引小标idx；
+
+> ```java
+> int idx = s % arr.length;
+> int idx = s & (arr.length - 1);
+> // 前提，arr长度必须是2的幂次方
+> // 原理： arr长度为8, 0111 & s = 0 ~ 7 之间
+> ```
+
+注意：很多源码中多数数组的长度基本上就是**2的幂次方**，为什么这样做？因为**计算机使用的二进制，方便计算**
+
+### 4.4、signalWork
+
+```java
+final void signalWork(WorkQueue[] ws, WorkQueue q) {
+    long c; int sp, i; WorkQueue v; Thread p;
+    // ctl 64位：第一个高16，16，16，16
+    // ctl是在构造器的时候初始化的，它的第一个高16位代表了ACTIVE counts，第二个高16代表了总共的counts数
+    while ((c = ctl) < 0L) {   // 符号位没有溢出，有效的最高数是被并行度控制，当活跃线程数高于改并行度，符号位溢出，ctl>0,所以只有当ctl小于0才是有效
+        if ((sp = (int)c) == 0) {                  // ctl的低32位，代表了INACTIVE数，若此时sp=0，代表了没有空闲线程
+                if ((c & ADD_WORKER) != 0L)// 检查ctl的第48位，也就是总共线程数状态，若不是0，那么FJP中的工作线程代表了没有达到的最大线程数
+                tryAddWorker(c);
+            break;
+        }
+        // 此时进来说明，存在空闲线程
+        if (ws == null) // 此时FJP的状态没有启动，那么直接返回,TERMINATED
+            break;
+        //  int SMASK = 0xffff;  
+        if (ws.length <= (i = sp & SMASK))  // 取sp的低16位，只要ws长度小于等于，代表了TERMINATED状态
+            break;
+        if ((v = ws[i]) == null) // ctl低32位的低16位存放了INACTIVE的索引小标 -> terminating
+            break;
+        // int SS_SEQ = 1 << 16 说明sp的高16位存放了版本信息
+        // int INACTIVE     = 1 << 31; 
+        // ~INACTIVE=0111 1111 1111 1111 1111111111111111：vs保留了非符号位的所有信息
+        int vs = (sp + SS_SEQ) & ~INACTIVE;        // next scanState
+        int d = sp - v.scanState;                  // screen CAS
+        // 把获取到的INACTIVE的线程，也即空闲线程唤醒，那么唤醒后，需要给AC+1即(c + AC_UNIT)
+        // (UC_MASK & (c + AC_UNIT)) 保留了的高32数
+        //  (SP_MASK & v.stackPred) 保留了低32的数  v.stackPred代表了下一个出栈操作，让低32位的低16位更新位唤醒线程的一下线程
+        long nc = (UC_MASK & (c + AC_UNIT)) | (SP_MASK & v.stackPred);
+      	// 此时的nc就是计算好的下一个ctl，next ctl
+        // d == 0代表了没有空闲线程，所以没有必要cas替换
+        if (d == 0 && U.compareAndSwapLong(this, CTL, c, nc)) { // cas替换ctl
+            v.scanState = vs;                      // 记录版本信息scanState，此时为正数
+            if ((p = v.parker) != null)	// 唤醒工作线程
+                U.unpark(p);	// unsafe唤醒
+            break;
+        }
+        if (q != null && q.base == q.top)          // 队列没有数据，直接退出
+            break;
+    }
+}
+```
+
+### 4.5、tryAddWorker
+
+```java
+private void tryAddWorker(long c) {
+    boolean add = false;
+    do {
+        long nc = ((AC_MASK & (c + AC_UNIT)) |	//活跃线程数加1，此时只保留了高16位的信息
+                   (TC_MASK & (c + TC_UNIT)));// 总线程数+1，此时只保留了高32位的低16位信息
+        // nc此时不需要管低32位，因此调用此方法的时候，没有空闲线程
+        if (ctl == c) {	// ctl没有被其他线程改变
+            int rs, stop;                 // check if terminating
+            // 检查FJP的状态是否为STOP
+            if ((stop = (rs = lockRunState()) & STOP) == 0)
+                add = U.compareAndSwapLong(this, CTL, c, nc);	// 更新ctl的值，CAS替换
+            unlockRunState(rs, rs & ~RSLOCK);	// 解锁
+            if (stop != 0)
+                break;
+            if (add) {	// 添加成功
+                createWorker();	// 创建work
+                break;
+            }
+        }
+    } while (((c = ctl) & ADD_WORKER) != 0L 	// 没有达到最大线程数
+             && (int)c == 0);	// 低32位为0，如果有空闲线程，不需要添加，应该给到空闲线程去执行
+}
+```
+
+### 4.6、createWorker
+
+```java
+
+private boolean createWorker() {
+    ForkJoinWorkerThreadFactory fac = factory;
+    Throwable ex = null;
+    ForkJoinWorkerThread wt = null;
+    try {
+        if (fac != null && (wt = fac.newThread(this)) != null) {	// 从线程工程中，创建线程
+            wt.start(); // 并启动线程
+            return true;
+        }
+    } catch (Throwable rex) {
+        ex = rex;
+    }
+    deregisterWorker(wt, ex);	// 如果出现异常，将ctl前面加的1回滚
+    return false;
+}
+
+// 默认工厂，用来创建线程
+ static final class DefaultForkJoinWorkerThreadFactory
+        implements ForkJoinWorkerThreadFactory {
+        public final ForkJoinWorkerThread newThread(ForkJoinPool pool) {
+            return new ForkJoinWorkerThread(pool);
+        }
+    }
+
+   protected ForkJoinWorkerThread(ForkJoinPool pool) {
+        // Use a placeholder until a useful name can be set in registerWorker
+        super("aForkJoinWorkerThread");	// 默认的名称
+        this.pool = pool;	// 保存对外的pool引用
+        this.workQueue = pool.registerWorker(this);	// 创建队列并注册到FJP
+    }
+```
+
+### 4.7、registerWorker
+
+创建工作队列WorkQueue，将自己的注册到FJP全局workQueues中，也就是保存到FJP的奇数位中
+
+```java
+final WorkQueue registerWorker(ForkJoinWorkerThread wt) {
+    UncaughtExceptionHandler handler;
+    wt.setDaemon(true);                           // 默认位守护线程
+    if ((handler = ueh) != null)	// 设置线程的异常处理器
+        wt.setUncaughtExceptionHandler(handler);
+    WorkQueue w = new WorkQueue(this, wt);	// 创建工作线程，注意：创建外部提交队列时： WorkQueue w = new WorkQueue(this, null);
+    int i = 0;                  // 创建的工作队列所保存在wqs的索引下标 // assign a pool index
+    int mode = config & MODE_MASK;	// 取工作模式：FIFO、LIFO
+    int rs = lockRunState();
+    try {
+        WorkQueue[] ws; int n;                    // skip if no array
+        if ((ws = workQueues) != null && (n = ws.length) > 0) {	// 日常判空
+            // int SEED_INCREMENT = 0x9e3779b9; 取大的质数，减少hash碰撞
+            int s = indexSeed += SEED_INCREMENT;  // indexSeed默认位0
+            int m = n - 1;	// wps长度-1，用于取模运算
+            i = ((s << 1) | 1) & m;   // 找存放w的小标
+            if (ws[i] != null) {                  // 此时发生了碰撞
+                int probes = 0;                   // step by approx half n
+                // int EVENMASK     = 0xfffe; 
+                int step = (n <= 4) ? 2 : ((n >>> 1) & EVENMASK) + 2; //发生碰撞二次寻址
+                // step保证偶数，+1等于奇数
+                while (ws[i = (i + step) & m] != null) {	
+                    if (++probes >= n) {	// 寻址达到了极限，那么扩容
+                        workQueues = ws = Arrays.copyOf(ws, n <<= 1); // 扩容容量为2倍
+                        m = n - 1;
+                        probes = 0;
+                    }
+                }
+            }
+            w.hint = s;                  // s作为随机数保存在wq的hint中
+            w.config = i | mode;		// 保存索引下标和模式
+             // publication fence， scanState为volatile，
+           w.scanState = i; // 此时对它进行写操作，storestore写成功，上面的变量一定可见，且不会和下面的ws[i]赋值发生重排序，注意这里的scanState变成了odd，也即奇数，所以要开始扫描获取任务并执行         
+            ws[i] = w;
+        }
+    } finally {
+        unlockRunState(rs, rs & ~RSLOCK);	// 解锁
+    }
+    wt.setName(workerNamePrefix.concat(Integer.toString(i >>> 1)));
+    return w;
+}
+```
+
+### 4.8、FJP核心run方法
+
+createWorker中调用线程的start方法，此时调用的是ForkJoinWorkerThread的run方法
+
+```java
+public void run() {
+    if (workQueue.array == null) { // only run once，array用来存放FJWT任务，确保只运行一次
+        Throwable exception = null;
+        try {
+            onStart();		// run之前的钩子函数
+            pool.runWorker(workQueue);	
+        } catch (Throwable ex) {
+            exception = ex;
+        } finally {
+            try {
+                onTermination(exception);	// run之后的回调函数
+            } catch (Throwable ex) {
+                if (exception == null)	// 保存最先发生的异常
+                    exception = ex;
+            } finally {
+                pool.deregisterWorker(this, exception);	// 线程退出后，进行状态还远
+            }
+        }
+    }
+}
+```
+
+
+
+### 4.9、runWorker
+
+```java
+/**
+ * Top-level runloop for workers, called by ForkJoinWorkerThread.run.
+ */
+final void runWorker(WorkQueue w) {
+    w.growArray();                   // allocate queue
+    // 随机数r
+    int seed = w.hint;               // initially holds randomization hint
+    int r = (seed == 0) ? 1 : seed;  // avoid 0 for xorShift
+    for (ForkJoinTask<?> t;;) {
+        if ((t = scan(w, r)) != null)	// 扫描可执行任务
+            w.runTask(t);				// 拿到任务之后，开始执行
+        else if (!awaitWork(w, r))			// 如果没有任务，那么awaitWork等待任务执行
+            break;	
+        r ^= r << 13; r ^= r >>> 17; r ^= r << 5; // 异或，基于上一个随机数r，计算下一个伪随机数
+    }
+}
+```
+
+### 4.10、growArray
+
+```java
+final ForkJoinTask<?>[] growArray() {
+    ForkJoinTask<?>[] oldA = array;
+    // oldA存在，那么进行扩容，否则size为初始化大小INITIAL_QUEUE_CAPACITY = 1<<13
+    int size = oldA != null ? oldA.length << 1 : INITIAL_QUEUE_CAPACITY = 1;
+    // 如果扩容之后，超过最大容量MAXIMUM_QUEUE_CAPACITY=1<<26,也即64M，抛出异常
+    if (size > MAXIMUM_QUEUE_CAPACITY)
+        throw new RejectedExecutionException("Queue capacity exceeded");
+    int oldMask, t, b;
+    // 创建新的array数组
+    ForkJoinTask<?>[] a = array = new ForkJoinTask<?>[size];
+    // 需要将array中的任务放入到新的数组中
+    // 为什么不用更快速的System.arrayCopy?
+    // 如何保证数组中的元素可见性？使用U.getObjectVolatile(数组首地址，偏移量)即可
+    if (oldA != null && (oldMask = oldA.length - 1) >= 0 &&
+        (t = top) - (b = base) > 0) {
+        int mask = size - 1;
+        do { // emulate poll from old array, push to new array
+            ForkJoinTask<?> x;
+            int oldj = ((b & oldMask) << ASHIFT) + ABASE;	// 旧的oldj偏移
+            int j    = ((b &    mask) << ASHIFT) + ABASE;	// 新的oldj偏移
+            x = (ForkJoinTask<?>)U.getObjectVolatile(oldA, oldj);	// 关键，注意语义1
+            if (x != null &&
+                U.compareAndSwapObject(oldA, oldj, x, null))	// 使用CAS，防止其他线程来的时候也进行数据的替换。因此 由于队列是工作窃取队列，可能有别的线程持有old数组引用，正通过base引用窃取尾部任务
+                U.putObjectVolatile(a, j, x);	// volatile语义2
+        } while (++b != t); // 循环，直到转移成功
+    }
+    return a;
+}
+```
+
+### 4.11、核心方法之scan
+
+scan方法中for循环执行流程如下：
+
+有两个分支：
+
+1、(q = ws[k]) != null，任务队列wq 不为null
+
+1. 计算下wq的队列中存在（ q.base - q.top）任务，并且q.array不为空，说明有还未被分配的任务，
+2. 计算a的索引下标
+3. 通过getObjectVolatile获取到ForkJoinTask任务队列t，并且此时q.base == b，说明base任务没有被其他线程拿去
+   1. 此时t不空，scanState是在创建FJWT构造register的时候赋值的，ss=scanState = i ，是数组奇数位的索引，所以第一次进来ss必定大于0，
+      1. 此时使用CAS将i位置的任务t置空，操作成功
+      2. 修改q.base的指针位置+1，
+         1. 如果 n<-1，说明当前队列任务比较多，那么通知其他线程来取任务signalWork
+      3. 此时返回当前任务t
+   2. 如果ss小于0，并且oldSum == 0 && w.scanState < 0，说明当前状态是INACTIVE，此时需要释放当前线程，通知其他线程来进行扫描tryRelease
+4. 此时任务t存在且q.base已经被拿到了，或者任务t不存在，且ss<0，
+   1. 修改ss的状态，从全局拿取ss = w.scanState;
+5. 此时任务t存在且q.base已经被拿到了，或者任务t不存在，只可能是因为出现了多线程竞争，所以为了减少竞争，那么重新计算随机数，转移获取任务的wq，复位origin，oldSum，checkSum，方便重新计算
+6. 如果执行到这里，那么此时修改checkSum += b;计算检查的次数
+
+2、(k = (k + 1) & m) == origin，说明此时k已经循环了一周了，那么需要将其变成稳定状态：扫描状态不变，且 没有线程操作队列 
+
+1. 如果ss小于0，判断ss状态是否改变，并且判断旧的oldSum和checkSum标记，同时更新oldSum。如果为true
+   1.   判断ss是否小于0，如果小于0，已经是非激活状态，直接break，或者 w.qlock < 0 此时线程已经被terminated了，直接break
+   2. 修改状态为INACTIVE： int ns = ss | INACTIVE; 
+   3. 将ctl的线程活跃数-1，并且将状态都放置到64位中，long nc = ((SP_MASK & ns) |(UC_MASK & ((c = ctl) - AC_UNIT)));
+   4. 拿到ctl中的栈地址stackPred赋值给w.stackPred
+   5. 使用U.putInt(w, QSCANSTATE, ns)设置当前工作队列w的状态ns，使用unsafe操作，优化：由于这里是volatile，进行直接赋值将会导致storestore和StoreLoad屏障，所以用unsafe类来普通变量赋值，减少性能损耗，而后面的CAS操作好，自然能能够保证这里的scanState语义。
+   6. 使用CAS更新CTL的状态nc ，
+      1. 如果此时CAS操作成功，ctl替换成功，必然scanState写成功，那么局部变量直接更新位最新值，而不用在去读scanState变量
+      2. 否则，那么退回到原来的状态，因为ctl没有改变，也即active counts没有减1成功，而scanState是用volatile修饰的，保证了其他线程可以看到当前修改的ss
+2. 此时修改checkSum的状态为0，等待下次循环到来，使其到达稳定状态。
+
+总结：
+
+```java
+// 在FJWT
+private ForkJoinTask<?> scan(WorkQueue w, int r) {
+    WorkQueue[] ws; int m;
+    if ((ws = workQueues) != null && (m = ws.length - 1) > 0 && w != null) {
+        int ss = w.scanState;                     // 保存之前设置的扫描状态，是创建FJWT构造register的时候赋值i
+        // 扫描获取任务，origin初始为伪随机数取模的下标，k初始为origin
+        // 由于在扫描过程中，可能有别的线程添加获取等操作，那么怎么样让当前FJWT返回呢，不可能一直在扫描，实在没有任务了，那么必须退出，避免造成性能损耗，那么问题就变为：如何发现当前没有可执行的任务呢？
+        // 采用oldSum和checkSum来判断整个wqs是否处于稳定状态，也即没有别的线程在往里面添加任务了，而且经历一定周期之后
+        for (int origin = r & m, k = origin, oldSum = 0, checkSum = 0;;) {	
+            WorkQueue q; ForkJoinTask<?>[] a; ForkJoinTask<?> t;
+            int b, n; long c;
+            // 在wqs中，找打一个不为空的队列
+            if ((q = ws[k]) != null) {
+                if ((n = (b = q.base) - q.top) < 0 &&	// array队列不为空，有可执行任务。初始时base=top
+                    (a = q.array) != null) {      // non-empty
+                    long i = (((a.length - 1) & b) << ASHIFT) + ABASE;	// 取array索引下标base的偏移地址
+                    if ((t = ((ForkJoinTask<?>)
+                              U.getObjectVolatile(a, i))) != null &&	//任务存在
+                        q.base == b) {		// base引用没有改变，也即任务没有被取走
+                        if (ss >= 0) {		// 如果扫描状态正常
+                            // CAS将任务t置空
+                            if (U.compareAndSwapObject(a, i, t, null)) {
+                                q.base = b + 1;			// 增加base值
+                                if (n < -1)       // 队列大于一个任务 ，那么需要通知其他任务也来取任务xx
+                                    signalWork(ws, q);
+                                return t;	// 返获取的任务
+                            }
+                        }
+                        else if (oldSum == 0 &&   // oldSum未改变之前，才能判断w的扫描状态，
+                                 w.scanState < 0)	// 如果扫描状态小于0，代表INACTIVE，此时需要尝试唤醒空闲线程进行扫描工作
+                            // ws[m & (int)c]：取队列栈顶wq，也即当前wq
+                            tryRelease(c = ctl, ws[m & (int)c], AC_UNIT);
+                    }
+                    // 任务不存在，那么判断此时扫描状态处理INACTIVE的话，那么需要从新获取扫描状态，可能别的线程已经将其置为扫描状态
+                    if (ss < 0)                   // refresh
+                        ss = w.scanState;
+                    // 执行到这里，那么只可能是因为线程竞争导致的，所以为了减少竞争，那么重新计算随机数，转移获取任务的wq，复位origin，oldSum，checkSum，方便重新计算
+                    r ^= r << 1; r ^= r >>> 3; r ^= r << 10;
+                    origin = k = r & m;           // move and rescan
+                    oldSum = checkSum = 0;
+                    continue;
+                }
+                checkSum += b;	// 通过base指针数据来校验判断
+            }
+            // (k = (k + 1) & m) == origin，表示k已经扫描了一遍队列一个周期
+            // 直到稳定态。如何保证
+            // 使用这种代码 oldSum == (oldSum = checkSum)。直到下次循环进来一样之后就稳定了
+            if ((k = (k + 1) & m) == origin) {    // continue until stable
+                if ((ss >= 0 || (ss == (ss = w.scanState))) && // ss小于0，判断ss状态是否改变
+                    oldSum == (oldSum = checkSum)) {  // 旧的oldSum和checkSum标记，同时更新oldSum
+                    // stable 稳定态：扫描状态不变，且 没有线程操作队列 
+                    if (ss < 0 || w.qlock < 0)    // already inactive
+                        // 此时状态已经稳定，直接退出循环
+                        break;
+                    // 将扫描状态设置为INACTIVE
+                    int ns = ss | INACTIVE;       // try to inactivate
+                    long nc = ((SP_MASK & ns) |	 // 将低32数据设置ns状态
+                               (UC_MASK & ((c = ctl) - AC_UNIT))); // 对活跃状态数减少1
+                    // 之前栈空闲线程的索引下标+版本号
+                    // ctl的低32位就是空闲线程的栈顶。workQueue的stackPred就是栈中的空闲线程
+                    w.stackPred = (int)c;         // hold prev stack top
+                    // 由于这里是volatile，进行直接赋值将会导致storestore和StoreLoad屏障，所以用unsafe类来普通变量赋值，减少性能损耗，而后面的CAS操作好，自然能能够保证这里的scanState语义。
+                    U.putInt(w, QSCANSTATE, ns);
+                    if (U.compareAndSwapLong(this, CTL, c, nc))
+                        ss = ns;	// 因为ctl替换成功，必然scanState写成功，那么局部变量直接更新位最新值，而不用在去读scanState变量
+                    else
+                        w.scanState = ss; // 如果CAS失败了，那么退回到原来的状态，因为ctl没有改变，也即active counts没有减1成功，而scanState是用volatile修饰的，保证了其他线程可以看到当前修改的ss
+                }
+                checkSum = 0;
+            }
+        }
+    }
+    return null;
+}
+```
+
+### 4.12、tryRelease
+
+```java
+private boolean tryRelease(long c, WorkQueue v, long inc) {
+    int sp = (int)c, vs = (sp + SS_SEQ) & ~INACTIVE; Thread p;
+    if (v != null && v.scanState == sp) {          // v is at top of stack
+        long nc = (UC_MASK & (c + inc)) | (SP_MASK & v.stackPred);
+        if (U.compareAndSwapLong(this, CTL, c, nc)) {
+            v.scanState = vs;
+            if ((p = v.parker) != null)
+                U.unpark(p);
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+### 4.13、runTask
+
+```java
+final void runTask(ForkJoinTask<?> task) {
+    if (task != null) {
+        scanState &= ~SCANNING; // mark as busy，标记
+        (currentSteal = task).doExec();
+        U.putOrderedObject(this, QCURRENTSTEAL, null); // release for GC
+        execLocalTasks();
+        ForkJoinWorkerThread thread = owner;
+        if (++nsteals < 0)      // collect on overflow
+            transferStealCount(pool);
+        scanState |= SCANNING;
+        if (thread != null)
+            thread.afterTopLevelExec();
+    }
+}
+```
+
+
+
+### push
+
+```java
+final void push(ForkJoinTask<?> task) {
+    ForkJoinTask<?>[] a; ForkJoinPool p;
+    int b = base, s = top, n;
+    if ((a = array) != null) {    // ignore if queue removed
+        int m = a.length - 1;     // fenced write for task visibility
+        U.putOrderedObject(a, ((m & s) << ASHIFT) + ABASE, task);
+        U.putOrderedInt(this, QTOP, s + 1);
+        if ((n = s - b) <= 1) {
+            if ((p = pool) != null)
+                p.signalWork(p.workQueues, this);
+        }
+        else if (n >= m)
+            growArray();
+    }
+}
+```
+
+
+
+### 4.5、ForkJoinPool构造器
+
+ForkJoinPool中的工作队列中：
+
+> 偶数位：外部提交队列
+>
+> 奇数位：工作窃取队列
+
+```java
+public ForkJoinPool() {
+    this(Math.min(MAX_CAP, Runtime.getRuntime().availableProcessors()),
+         defaultForkJoinWorkerThreadFactory, null, false);
+}
+// parallelism 默认核心线程数
+ public ForkJoinPool(int parallelism,
+                        ForkJoinWorkerThreadFactory factory,	// 线程工厂
+                        UncaughtExceptionHandler handler,		// 线程异常处理器
+                        boolean asyncMode) {	// 执行模式，异步或同步，默认false
+        this(checkParallelism(parallelism),
+             checkFactory(factory),
+             handler,
+             asyncMode ? FIFO_QUEUE : LIFO_QUEUE,	// 选择从base指针取，还是top取。默认top取
+             "ForkJoinPool-" + nextPoolId() + "-worker-");
+        checkPermission();
+    }
+
+  private ForkJoinPool(int parallelism,
+                         ForkJoinWorkerThreadFactory factory,
+                         UncaughtExceptionHandler handler,
+                         int mode,
+                         String workerNamePrefix) {
+      	// 假如：parallelism = 64
+        this.workerNamePrefix = workerNamePrefix;
+        this.factory = factory;
+        this.ueh = handler;
+      // config高16位保存mode，低16位保存，线程池具有的并行度
+        this.config = (parallelism & SMASK) | mode;
+      	// np = 11111111111
+        long np = (long)(-parallelism); // offset ctl counts
+      	// AC:1111 1111 1000 0000 高32的高16位
+      	// TC:1111 1111 1000 0000 高32的低16位
+      	// 低32保存空闲线程，也就是INACTIVE counts
+        this.ctl = ((np << AC_SHIFT) & AC_MASK) | ((np << TC_SHIFT) & TC_MASK);
+    }
+
+```
+
+```java
+ static final int SMASK        = 0xffff;  
+
+// Mode bits for ForkJoinPool.config and WorkQueue.config
+// 高16位保存mode，低16位保存，线程池具有的并行度
+static final int MODE_MASK    = 0xffff << 16;  // top half of int
+static final int LIFO_QUEUE   = 0;
+static final int FIFO_QUEUE   = 1 << 16;
+static final int SHARED_QUEUE = 1 << 31;       // must be negative
 ```
 
 ### 4.4、lockRunState
