@@ -1,4 +1,4 @@
-package com.ouyangliuy;
+package com.ouyangliuy.sort;
 
 import com.ouyangliuy.utils.SortUtils;
 
