@@ -8,9 +8,9 @@ public class SortUtils {
         // Math.random()   [0,1)  是0 ~ 1 的左闭又开区间
         // Math.random() * N   [0,N)  是0 ~ 1 的左闭又开区间
         // (int)(Math.random() * N)  [0, N-1] 的左闭又开区间
-        int[] arr = new int [(int) (Math.random() * (maxSize + 1))];
+        int[] arr = new int[(int) (Math.random() * (maxSize + 1))];
         for (int i = 0; i < arr.length; i++) {
-            arr[i] = (int) (Math.random() * (maxValue + 1)) - (int)(Math.random() * (maxValue + 1));
+            arr[i] = (int) (Math.random() * (maxValue + 1)) - (int) (Math.random() * (maxValue + 1));
         }
         return arr;
     }
@@ -23,14 +23,14 @@ public class SortUtils {
         if ((arr1 == null && arr2 != null) || (arr1 != null && arr2 == null)) {
             return false;
         }
-        if (arr1 == null && arr2 == null) {
+        if (arr1 == null) {
             return true;
         }
         if (arr1.length != arr2.length) {
             return false;
         }
         for (int i = 0; i < arr1.length; i++) {
-            if (arr1[i] != arr2[i])  return false;
+            if (arr1[i] != arr2[i]) return false;
         }
         return true;
     }
@@ -46,6 +46,7 @@ public class SortUtils {
         System.arraycopy(arr, 0, res, 0, arr.length);
         return res;
     }
+
     //  6:110 7:111
     //  111
     // i和j是一个位置的话，会出错
