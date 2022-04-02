@@ -1955,6 +1955,8 @@ public void run() {
 
 
 
+
+
 ### 4.9、runWorker
 
 ```java
@@ -2146,17 +2148,92 @@ private boolean tryRelease(long c, WorkQueue v, long inc) {
 ```java
 final void runTask(ForkJoinTask<?> task) {
     if (task != null) {
-        scanState &= ~SCANNING; // mark as busy，标记
-        (currentSteal = task).doExec();
+        scanState &= ~SCANNING; // mark as busy，标记当前wq的工作线程处于执行获取到的任务状态，即标记为负数
+        (currentSteal = task).doExec();	// task是当前线程从队列里获取的，也即task设置为currentSteal，这里就运行了
+        // 执行完毕之后释放currentSteal应用。为什么这么写？storeBuffer -》 StoreLoad -> volatile语义，写变量时，storeStore，StoreLoad。那么这里为了保证写入的顺序->putOrderedObject避免了StoreLoad屏障对性能的损耗
         U.putOrderedObject(this, QCURRENTSTEAL, null); // release for GC
+        // 执行本地任务。
+        // 问题：谁能往当前线程的工作队列里放任务？当前线程在执行FJT时往自己队列里放了任务，也只有当前线程才能往array任务数组里放任务。
         execLocalTasks();
         ForkJoinWorkerThread thread = owner;
-        if (++nsteals < 0)      // collect on overflow
+        if (++nsteals < 0)      // nsteals代表了当前线程的数量，如果小于0代表符号位溢出，
             transferStealCount(pool);
-        scanState |= SCANNING;
+        scanState |= SCANNING;	// 任务执行完毕，回复当前线程为扫描状态
         if (thread != null)
-            thread.afterTopLevelExec();
+            thread.afterTopLevelExec();	// 任务执行完毕之后的钩子函数
     }
+}
+
+// 当前32位计数值达到饱和，那么将其假如到FJP的64位全局变量计数器中，并将nsteals清0。
+ final void transferStealCount(ForkJoinPool p) {
+            AtomicLong sc;
+            if (p != null && (sc = p.stealCounter) != null) {
+                int s = nsteals;
+                nsteals = 0;            // if negative, correct for overflow
+                sc.getAndAdd((long)(s < 0 ? Integer.MAX_VALUE : s));
+            }
+        }
+```
+
+### 4.14、awaitWork
+
+```java
+private boolean awaitWork(WorkQueue w, int r) {
+    if (w == null || w.qlock < 0)                 // 线程池正在 terminating
+        return false;
+    // SPINS 默认自旋次数0
+   // 取当前线程工作压入空闲栈中的前一个工作版本+下标（低32位）
+    for (int pred = w.stackPred, spins = SPINS, ss;;) { // 找打前面一个pred的位置
+        if ((ss = w.scanState) >= 0)
+            break;
+        else if (spins > 0) {	// 没有达到自旋次数阈值
+            r ^= r << 6; r ^= r >>> 21; r ^= r << 7;
+            if (r >= 0 && --spins == 0) {         // randomize spins
+                WorkQueue v; WorkQueue[] ws; int s, j; AtomicLong sc;
+                if (pred != 0 && (ws = workQueues) != null &&
+                    (j = pred & SMASK) < ws.length &&
+                    (v = ws[j]) != null &&        // see if pred parking
+                    (v.parker == null || v.scanState >= 0))
+                    spins = SPINS;                // continue spinning
+            }
+        }
+        else if (w.qlock < 0)                     // recheck after spins
+            return false;
+        else if (!Thread.interrupted()) {	// 如果当前FJWT工作线程没有发生中断，那么尝试睡眠，否则清除标记位后继续scan扫描任务，
+            long c, prevctl, parkTime, deadline;
+            // 构造器中：this.config = (parallelism & SMASK) | mode;
+            int ac = (int)((c = ctl) >> AC_SHIFT) 	// 获取ctl的高16位值：活跃线程数
+                + (config & SMASK);					// 取低16位config的值：即在构造器设置并行度
+            // 如果ac < 0说明 活跃线程数 + 并行度 相加越界了，正常情况是 ac > 0
+            if ((ac <= 0 && tryTerminate(false, false)) ||
+                (runState & STOP) != 0)           // 线程池状态处理stop，所以停止执行
+                return false;
+            if (ac <= 0 && ss == (int)c) {        // is last waiter
+                prevctl = (UC_MASK & (c + AC_UNIT)) | (SP_MASK & pred);
+                int t = (short)(c >>> TC_SHIFT);  // shrink excess spares
+                if (t > 2 && U.compareAndSwapLong(this, CTL, c, prevctl))
+                    return false;                 // else use timed wait
+                parkTime = IDLE_TIMEOUT * ((t >= 0) ? 1 : 1 - t);
+                deadline = System.nanoTime() + parkTime - TIMEOUT_SLOP;
+            }
+            else
+                prevctl = parkTime = deadline = 0L;
+            Thread wt = Thread.currentThread();
+            U.putObject(wt, PARKBLOCKER, this);   // emulate LockSupport
+            w.parker = wt;
+            if (w.scanState < 0 && ctl == c)      // recheck before park
+                U.park(false, parkTime);
+            U.putOrderedObject(w, QPARKER, null);
+            U.putObject(wt, PARKBLOCKER, null);
+            if (w.scanState >= 0)
+                break;
+            if (parkTime != 0L && ctl == c &&
+                deadline - System.nanoTime() <= 0L &&
+                U.compareAndSwapLong(this, CTL, c, prevctl))
+                return false;                     // shrink pool
+        }
+    }
+    return true;
 }
 ```
 
@@ -2351,6 +2428,48 @@ private void unlockRunState(int oldRunState, int newRunState) {
 15、CompletionStage与Future原理 
 
 16、 Completion及其子类与ForkJoinTask原理 
+
+## 5、基础知识
+
+### 5.1、反码，补码、原码
+
+**从一个面试问题开始：为什么一个byte可以表示-128~127？**
+
+**推理：**我们要表示负数和正数对吧，所以需要一位来表示正或负，所以选取最高位用于表示整数和负数。定：最高位0为正数，最高位1为负数
+
+先直接运算：十进制数： 1+(-1) = 0 等价于1-1 = 0
+
+然后用上面的二进制规则来表示：A: 0000 0001 B: 1000 0001
+
+**原码表示**：
+
+> A+B = 0000 0001 + 1000 0001 = 1000 0010 = -2(十进制)，结果不对。故不能采用直接相加方法
+
+**反码表示**：(正数反码不变，负数符号位不变，按位取反)
+
+反码：A: 0000 0001 B:1111 1110
+
+> A+B = 0000 0001 + 1111 1110 = 1111 1111(f反码) - 》 变为原码 - 》 1000 0000 结果不对
+>
+>  1000 0000的十进制数：-0
+
+问题：为什么导致运算结果出现了不符合逻辑的数？因为忽略了符号位，也即符号位没有参与到运算中。
+
+**此时定义补码**：（正数补码不变，负数取反码之后，加1）
+
+补码：A:0000 0001 B：1111 11111
+
+> A+B = 0000 0001 + 1111 1111 = 1 (溢出) 0000 0000（补码）-》变为原码 - 》0000 0000 结果正确，因此这就时补码出现的意义
+
+**面试答案：**
+
+> 正数表示最大范围：0 111 1111 = +127
+>
+> 负数表示最大范围：1 1111 111  = -127 ，从上面的推理可知，负数最小也就-127
+>
+> 但是由于，能借符号位，即最高位即当值也当符合位，所以：
+>
+> 1 000 0000 才是负数的范围，也即 -128
 
 ## 5、CompletableFuture
 
