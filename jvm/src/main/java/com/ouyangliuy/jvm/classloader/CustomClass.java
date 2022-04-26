@@ -13,7 +13,7 @@ public class CustomClass extends ClassLoader {
     @Override
     public Class<?> loadClass(String name) throws ClassNotFoundException {
 
-        File file = new File("E:/workspace/source/java-base/target/classes/com/ouyangliuy/jvm/", name.replace(".", "/") + ".class");
+        File file = new File("E:/workspace/java-base/jvm/target/classes/com/ouyangliuy/jvm/", name.replace(".", "/") + ".class");
         try {
             FileInputStream fis = new FileInputStream(file);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -31,14 +31,5 @@ public class CustomClass extends ClassLoader {
         return super.loadClass(name);
     }
 
-    public static void main(String[] args) throws ClassNotFoundException, InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
 
-        ClassLoader customClass = new CustomClass();
-        Class<?> aClass = customClass.loadClass("com.ouyangliuy.jvm.Hello");
-        System.out.println(aClass);
-        Hello hello = (Hello) aClass.getDeclaredConstructor().newInstance();
-        hello.sayHello();
-        System.out.println(customClass.getClass().getClassLoader());
-
-    }
 }
