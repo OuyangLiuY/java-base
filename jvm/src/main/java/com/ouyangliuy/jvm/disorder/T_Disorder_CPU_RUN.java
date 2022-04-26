@@ -1,5 +1,8 @@
-package com.ouyangliuy.base;
+package com.ouyangliuy.jvm.disorder;
 
+/**
+ * 证明CPU是乱序执行
+ */
 public class T_Disorder_CPU_RUN {
 
     private static int x = 0, y = 0;
