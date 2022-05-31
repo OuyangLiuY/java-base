@@ -15,7 +15,13 @@
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
     </properties>
-
+        <repositories>
+            <repository>
+                <id>GroupDocsJavaAPI</id>
+                <name>GroupDocs Java API</name>
+                <url>https://repository.groupdocs.com/repo/</url>
+            </repository>
+        </repositories>
     <dependencies>
 
         <!-- https://mvnrepository.com/artifact/io.netty/netty-all -->
@@ -44,7 +50,5 @@
             <scope>test</scope>
         </dependency>
 
-
     </dependencies>
-
 </project>
