@@ -1,6 +1,6 @@
 package com.ouyangliuy.sort;
 
-import com.ouyangliuy.utils.SortUtils;
+import com.ouyangliuy.utils.AlgorithmUtils;
 
 import java.util.Arrays;
 
@@ -22,10 +22,10 @@ public class QuickSort {
         int idx = L;
         while (idx < R) {
             if (arr[idx] <= arr[R])
-                SortUtils.swap(arr, idx, ++lessEqual);
+                AlgorithmUtils.swap(arr, idx, ++lessEqual);
             idx++;
         }
-        SortUtils.swap(arr, R, ++lessEqual);
+        AlgorithmUtils.swap(arr, R, ++lessEqual);
         return lessEqual;
     }
 
@@ -44,14 +44,14 @@ public class QuickSort {
         int more = R;
         while (idx < more) {
             if (arr[idx] < arr[R])
-                SortUtils.swap(arr, idx++, ++less);
+                AlgorithmUtils.swap(arr, idx++, ++less);
             else if (arr[idx] > arr[R])
-                SortUtils.swap(arr, idx, --more);
+                AlgorithmUtils.swap(arr, idx, --more);
             else
                 idx++;
         }
         // 最后将R位置得数，放到数组中间
-        SortUtils.swap(arr, more, R);
+        AlgorithmUtils.swap(arr, more, R);
         return new int[]{less + 1, more};
     }
 
@@ -101,7 +101,7 @@ public class QuickSort {
             return;
         }
         // 随机快排
-        SortUtils.swap(arr, L + (int) (Math.random() * (R - L + 1)), R);
+        AlgorithmUtils.swap(arr, L + (int) (Math.random() * (R - L + 1)), R);
         // 一次排序的结果：
         // L..R partition  [ xx <= arr[R] arr[R] > xx ]
         int[] M = netherLandsFlag(arr, L, R);
@@ -117,10 +117,10 @@ public class QuickSort {
         int maxSize = 10000000;
         int maxValue = 10000;
         for (int i = 0; i < testTime; i++) {
-            int[] a1 = SortUtils.generateRandomArray(maxSize, maxValue);
-            int[] a2 = SortUtils.copyArray(a1);
-            int[] a3 = SortUtils.copyArray(a1);
-            int[] a4 = SortUtils.copyArray(a1);
+            int[] a1 = AlgorithmUtils.generateRandomArray(maxSize, maxValue);
+            int[] a2 = AlgorithmUtils.copyArray(a1);
+            int[] a3 = AlgorithmUtils.copyArray(a1);
+            int[] a4 = AlgorithmUtils.copyArray(a1);
             long s = System.currentTimeMillis();
             Arrays.sort(a1);
             long ee1 = System.currentTimeMillis();
@@ -136,9 +136,9 @@ public class QuickSort {
             quickSort3(a4);
             long ee5 = System.currentTimeMillis();
             System.out.println("4="+(ee5-ee4));
-            boolean e1 = SortUtils.isEqual(a1, a2);
-            boolean e2 = SortUtils.isEqual(a1, a3);
-            boolean e3 = SortUtils.isEqual(a1, a4);
+            boolean e1 = AlgorithmUtils.isEqual(a1, a2);
+            boolean e2 = AlgorithmUtils.isEqual(a1, a3);
+            boolean e3 = AlgorithmUtils.isEqual(a1, a4);
             if (!e1 || !e2 || !e3) {
                 System.out.println("Oop,Fuck!");
                 System.out.println(Arrays.toString(a1));

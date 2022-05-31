@@ -1,6 +1,6 @@
 package com.ouyangliuy.sort;
 
-import com.ouyangliuy.utils.SortUtils;
+import com.ouyangliuy.utils.AlgorithmUtils;
 
 /**
  * ### 什么是完全二叉树？
@@ -219,14 +219,14 @@ public class HeapSort {
             int maxValue = 100;
             boolean succeed = true;
             for (int i = 0; i < testTime; i++) {
-                int[] arr1 = SortUtils.generateRandomArray(maxSize, maxValue);
-                int[] arr2 = SortUtils.copyArray(arr1);
+                int[] arr1 = AlgorithmUtils.generateRandomArray(maxSize, maxValue);
+                int[] arr2 = AlgorithmUtils.copyArray(arr1);
                 heapSort(arr1);
-                SortUtils.comparator(arr2);
-                if (!SortUtils.isEqual(arr1, arr2)) {
-                    SortUtils.printArray(arr1);
+                AlgorithmUtils.comparator(arr2);
+                if (!AlgorithmUtils.isEqual(arr1, arr2)) {
+                    AlgorithmUtils.printArray(arr1);
                     succeed = false;
-                    SortUtils.printArray(arr2);
+                    AlgorithmUtils.printArray(arr2);
                     break;
                 }
             }

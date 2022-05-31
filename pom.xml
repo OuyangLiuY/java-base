@@ -13,7 +13,7 @@
         <module>common</module>
         <module>algorithm</module>
         <module>jvm</module>
-        <module>demo</module>
+        <module>base</module>
         <module>jmh</module>
     </modules>
 

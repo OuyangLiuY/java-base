@@ -1,5 +1,8 @@
-package com.ouyangliuy;
+package com.ouyangliuy.list;
 
+/**
+ * 单链表，双链表基本算法，链表反转，以及移除node
+ */
 public class NodeList {
 
 

@@ -30,5 +30,6 @@ public class Knapsack {
         int N = v.length;
         int dp[][] = new int[N + 1][bag + 1];
 
+        return dp[0][bag];
     }
 }
