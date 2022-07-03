@@ -15,6 +15,7 @@
         <module>jvm</module>
         <module>base</module>
         <module>jmh</module>
+        <module>jdk-new</module>
     </modules>
 
     <properties>
