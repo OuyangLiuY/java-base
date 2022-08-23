@@ -58,6 +58,8 @@ CAS+state ：完成多线程枪锁逻辑，Queue完成抢不到的锁的线程�
 
 ## AQS核心代码
 
+AbstractQueuedSynchronizer
+
 acquire-获取锁
 
 ```java
@@ -237,7 +239,7 @@ public class ReentrantLock implements Lock, java.io.Serializable {
 
 核心方法-lock
 
-```
+```java
 public void lock() {
     sync.lock();
 }
@@ -390,7 +392,23 @@ ReentrantReadWriteLock
 >
 
 
+状态和线程数
 
+```java
+        // 对于int
+        // 高16位存储所有读线程获取共享锁得次数
+        // 低16位存储当前所有线程个数，包括读/写
+        static final int SHARED_SHIFT   = 16;
+        // 
+        static final int SHARED_UNIT    = (1 << SHARED_SHIFT);
+        static final int MAX_COUNT      = (1 << SHARED_SHIFT) - 1;
+        static final int EXCLUSIVE_MASK = (1 << SHARED_SHIFT) - 1;
+
+        /** Returns the number of shared holds represented in count  */
+        static int sharedCount(int c)    { return c >>> SHARED_SHIFT; }
+        /** Returns the number of exclusive holds represented in count  */
+        static int exclusiveCount(int c) { return c & EXCLUSIVE_MASK; }
+```
 
 
 tryAcquireShared
@@ -416,7 +434,7 @@ protected final int tryAcquireShared(int unused) {
      */
     Thread current = Thread.currentThread();
     int c = getState();
-    if (exclusiveCount(c) != 0 &&
+    if (exclusiveCount(c) != 0 && // 解析下低
         getExclusiveOwnerThread() != current)
         return -1;
     int r = sharedCount(c);
