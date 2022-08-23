@@ -1,6 +1,6 @@
 
 
-## JUC之如何实现一把锁？
+# 1、JUC之如何实现一把锁？
 
 1. 如何表示锁状态，无锁，有锁？
 
@@ -32,7 +32,7 @@
    >
    > 阻塞：唤醒
 
-### 自旋优缺点：
+# 2、自旋优缺点：
 
 **缺点：**CPU占用不干事，导致性能障碍，占着茅坑不拉屎
 
@@ -44,7 +44,7 @@
 
 
 
-### 从如何实现锁到什么是AQS？
+# 3、从如何实现锁到什么是AQS？
 
 Abstract：因为不知道怎么上锁，模板方法设计模式即可，暴露上锁逻辑
 
@@ -56,9 +56,11 @@ CAS+state ：完成多线程枪锁逻辑，Queue完成抢不到的锁的线程�
 
 
 
-## AQS核心代码
+# 4、AQS核心代码
 
-AbstractQueuedSynchronizer
+## 1.2.1、AbstractQueuedSynchronizer
+
+当前类是AQS核心代码，该类是抽象类，提供了自己的默认实现，并且定义了规范，如：获取锁/释放锁。具体由子类来实现。
 
 acquire-获取锁
 
@@ -120,11 +122,22 @@ protected boolean tryRelease(int arg) {
 
 > 子类只需要实现自己获取锁逻辑和释放锁逻辑即可，至于排队阻塞等待，唤醒机制均由AQS来完成
 
-## ReentrantLock原理
+# 5、ReentrantLock
 
-概念
+**Concept：**
 
-### 核心变量和构造器
+```c
+/*
+* A ReentrantLock is owned by the thread last
+* successfully locking, but not yet unlocking it. A thread invoking
+* lock will return, successfully acquiring the lock, when
+* the lock is not owned by another thread. The method will return
+* immediately if the current thread already owns the lock. This can
+* be checked using methods isHeldByCurrentThread() and getHoldCount().
+*/
+```
+
+## 1.3.1、Field & Construct:
 
 ```java
 public class ReentrantLock implements Lock, java.io.Serializable {
@@ -153,20 +166,26 @@ public class ReentrantLock implements Lock, java.io.Serializable {
 }
 ```
 
-### 公平和非公平
+## 1.3.2、Fair & NonFair
 
-公平和非公平是针对排队的线程
+**Concept：**
 
-公平：直接放入到阻塞队列，不抢
+> 公平和非公平是针对排队的线程
+>
+> 公平：直接放入到阻塞队列，不抢
+>
+> 非公平：不管是否有线程排队，先枪锁。抢不到再进入队列
 
-非公平：不管是否有线程排队，先枪锁。抢不到再进入队列
+**为什么非公平性能要高于公平：**
 
-为什么非公平性能要高于公平：因为先放入到队列，阻塞等待，需要状态切换也即上下文切换
+因为先放入到队列，阻塞等待，需要状态切换也即上下文切换
 
 > 总结：线程上下文切换和延迟调度
 
-```c
-   /**
+### 1.3.2.1、Nonfair
+
+```java
+ /**
      * Sync object for non-fair locks
      */
     static final class NonfairSync extends Sync {
@@ -190,6 +209,12 @@ public class ReentrantLock implements Lock, java.io.Serializable {
             return nonfairTryAcquire(acquires);
         }
     }
+```
+
+### 1.3.2.2、Fair
+
+```c
+  
 
     /**
      * Sync object for fair locks
@@ -245,7 +270,7 @@ public void lock() {
 }
 ```
 
-### Sync
+## 1.3.3、Sync
 
 ```java
 abstract static class Sync extends AbstractQueuedSynchronizer {
@@ -324,7 +349,7 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
 }
 ```
 
-读写锁：
+# 6、读写锁：
 
 互斥锁：
 
@@ -364,11 +389,9 @@ public interface ReadWriteLock {
 
 
 
-## ReentrantReadWriteLock
+## 6.1、读写锁实现原理
 
-```
-ReentrantReadWriteLock
-```
+
 
 释放读锁流程:
 
@@ -391,8 +414,11 @@ ReentrantReadWriteLock
 > 优化：再读写锁总维护一个：first 获取读锁得变量和线程对象即可。
 >
 
-
 状态和线程数
+
+## 6.2、Sync
+
+**State Field:**
 
 ```java
         // 对于int
@@ -408,12 +434,52 @@ ReentrantReadWriteLock
         static int sharedCount(int c)    { return c >>> SHARED_SHIFT; }
         /** Returns the number of exclusive holds represented in count  */
         static int exclusiveCount(int c) { return c & EXCLUSIVE_MASK; }
+
+
+
+```
+
+**Class Field：**
+
+```java
+/** The hold count of the last thread to successfully acquire readLock. */
+// 最近刚获取锁的线程缓存的count
+private transient HoldCounter cachedHoldCounter; 
+/** The number of reentrant read locks held by current thread.*/
+// 当前线程持有的可重入读锁的次数。
+private transient ThreadLocalHoldCounter readHolds;
+
 ```
 
 
-tryAcquireShared
 
-获取共享锁
+### 6.2.1、tryRelease
+
+释放锁过程：
+
+1. 检查线程是否合法
+2. 拿到需要减去的状态值，
+3. 检查当前线程所共享锁的次数是否为0
+4. 如果为0，需要修改锁线程为null，否则只需要修改状态即可。
+
+```java
+protected final boolean tryRelease(int releases) {
+    if (!isHeldExclusively()) //检查操作释放lock的线程是否是当前获取锁的线程
+        throw new IllegalMonitorStateException();
+    int nextc = getState() - releases; // 修改状态
+    boolean free = exclusiveCount(nextc) == 0; // 查看是否共享次数为0，为0，说明需要释放，不然只需要将状态值减1
+    if (free)
+        setExclusiveOwnerThread(null);
+    setState(nextc);
+    return free;
+}
+```
+
+### 6.2.2、tryAcquireShared
+
+获取共享锁：
+
+
 
 ```java
 protected final int tryAcquireShared(int unused) {
@@ -434,33 +500,37 @@ protected final int tryAcquireShared(int unused) {
      */
     Thread current = Thread.currentThread();
     int c = getState();
-    if (exclusiveCount(c) != 0 && // 解析下低
+    if (exclusiveCount(c) != 0 && // 解析低16位，获取线程持有数，如果不为0，说明有线程获取过锁，那么检查当前线程是否是已经获取锁的线程。如果不是，直接返回，获取失败。
         getExclusiveOwnerThread() != current)
         return -1;
-    int r = sharedCount(c);
-    if (!readerShouldBlock() &&
-        r < MAX_COUNT &&
-        compareAndSetState(c, c + SHARED_UNIT)) {
-        if (r == 0) {
+    int r = sharedCount(c); //获取共享锁的高16位所代表的数量
+    if (!readerShouldBlock() && // 不需要被block
+        r < MAX_COUNT && // r合法
+        compareAndSetState(c, c + SHARED_UNIT)) { // CAS修改变量
+        if (r == 0) {	// r为0，说明是第一次尝试获取该锁
             firstReader = current;
             firstReaderHoldCount = 1;
-        } else if (firstReader == current) {
-            firstReaderHoldCount++;
+        } else if (firstReader == current) { // 说明第一个获取锁的线程又来获取锁
+            firstReaderHoldCount++; // holdCount++
         } else {
+            // 说明其他线程获取共享锁，那么检查
             HoldCounter rh = cachedHoldCounter;
             if (rh == null || rh.tid != getThreadId(current))
                 cachedHoldCounter = rh = readHolds.get();
-            else if (rh.count == 0)
+            else if (rh.count == 0) // 说明其他线程是第一次来，
                 readHolds.set(rh);
-            rh.count++;
+            rh.count++;				// 否则需要将其count++
         }
         return 1;
     }
+    // 什么情况会调用该方法呢？
+    // 1.CAS失败，
+    // 2.需要block
     return fullTryAcquireShared(current);
 }
 ```
 
-fullTryAcquireShared
+### 6.2.3、fullTryAcquireShared
 
 获取共享锁
 
@@ -469,6 +539,7 @@ fullTryAcquireShared
  * Full version of acquire for reads, that handles CAS misses
  * and reentrant reads not dealt with in tryAcquireShared.
  */
+// 获取读取的完整版本，它处理CAS未命中和在可重入读取方法tryAcquireShared中未处理
 final int fullTryAcquireShared(Thread current) {
     /*
      * This code is in part redundant with that in
@@ -484,7 +555,7 @@ final int fullTryAcquireShared(Thread current) {
                 return -1;
             // else we hold the exclusive lock; blocking here
             // would cause deadlock.
-        } else if (readerShouldBlock()) {
+        } else if (readerShouldBlock()) { //说明，读锁是不能被重入。
             // Make sure we're not acquiring read lock reentrantly
             if (firstReader == current) {
                 // assert firstReaderHoldCount > 0;
@@ -494,7 +565,7 @@ final int fullTryAcquireShared(Thread current) {
                     if (rh == null || rh.tid != getThreadId(current)) {
                         rh = readHolds.get();
                         if (rh.count == 0)
-                            readHolds.remove();
+                            readHolds.remove(); //删除reader持有的缓存。
                     }
                 }
                 if (rh.count == 0)
@@ -525,7 +596,7 @@ final int fullTryAcquireShared(Thread current) {
 }
 ```
 
-### tryReleaseShared
+### 6.2.4、tryReleaseShared
 
 释放共享锁过程：
 
@@ -536,6 +607,7 @@ final int fullTryAcquireShared(Thread current) {
 ```java
 protected final boolean tryReleaseShared(int unused) {
     Thread current = Thread.currentThread();
+    // 因为它最先会被设置，所以需要修改其状态。
     if (firstReader == current) {
         // assert firstReaderHoldCount > 0;
         if (firstReaderHoldCount == 1)
@@ -552,8 +624,10 @@ protected final boolean tryReleaseShared(int unused) {
             if (count <= 0)
                 throw unmatchedUnlockException();
         }
-        --rh.count;
+        --rh.count; // 修改持有count
     }
+    // 相当于加锁修改其全局状态，只有CAS成功才会返回成功，否则会失败。保证原子性和线程安全。
+    // 为什么要for循环，因为有可能其他线程同样也在修改这个状态。所以需要不断尝试。
     for (;;) {
         int c = getState();
         int nextc = c - SHARED_UNIT;
