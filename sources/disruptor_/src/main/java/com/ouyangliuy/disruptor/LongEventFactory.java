@@ -1,4 +1,4 @@
-package disruptor;
+package com.ouyangliuy.disruptor;
 
 import com.lmax.disruptor.EventFactory;
 public class LongEventFactory implements EventFactory<LongEvent>{

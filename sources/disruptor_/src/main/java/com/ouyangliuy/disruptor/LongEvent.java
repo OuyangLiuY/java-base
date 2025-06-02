@@ -1,4 +1,4 @@
-package disruptor;
+package com.ouyangliuy.disruptor;
 
 public class LongEvent<T> {
     private T value;

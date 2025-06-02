@@ -1,7 +1,8 @@
 package juc;
 
-import com.ouyangliuy.utils.MyUnsafe;
+
 import sun.misc.Unsafe;
+import utils.MyUnsafe;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;

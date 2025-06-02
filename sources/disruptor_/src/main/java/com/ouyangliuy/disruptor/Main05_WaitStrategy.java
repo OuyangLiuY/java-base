@@ -1,15 +1,13 @@
-package disruptor;
+package com.ouyangliuy.disruptor;
+
+import com.lmax.disruptor.RingBuffer;
+import com.lmax.disruptor.SleepingWaitStrategy;
+import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.dsl.ProducerType;
 
 import java.util.concurrent.*;
 
-import com.lmax.disruptor.EventHandler;
-import com.lmax.disruptor.ExceptionHandler;
-import com.lmax.disruptor.SleepingWaitStrategy;
-import com.lmax.disruptor.dsl.Disruptor;
-import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.dsl.ProducerType;
-
-public class Main07_ExceptionHandler {
+public class Main05_WaitStrategy {
     public static void main(String[] args) throws Exception {
 
         //the factory for the event
@@ -19,30 +17,12 @@ public class Main07_ExceptionHandler {
         int bufferSize = 1024;
 
         //Construct the Disruptor
-        Disruptor<LongEvent> disruptor = new Disruptor<>(factory, bufferSize, Executors.defaultThreadFactory(), ProducerType.MULTI, new SleepingWaitStrategy());
+        Disruptor<LongEvent> disruptor = new Disruptor<>(factory, bufferSize,
+                Executors.defaultThreadFactory(), ProducerType.MULTI,
+                new SleepingWaitStrategy());
 
-        //Connect the handlers
-        EventHandler h1 = (event, sequence, end) -> {
-            System.out.println("消费者出异常");
-        };
-        disruptor.handleEventsWith(h1);
-
-        disruptor.handleExceptionsFor(h1).with(new ExceptionHandler<LongEvent>() {
-            @Override
-            public void handleEventException(Throwable throwable, long l, LongEvent longEvent) {
-                throwable.printStackTrace();
-            }
-
-            @Override
-            public void handleOnStartException(Throwable throwable) {
-                System.out.println("Exception Start to Handle!");
-            }
-
-            @Override
-            public void handleOnShutdownException(Throwable throwable) {
-                System.out.println("Exception End to Handle!");
-            }
-        });
+        //Connect the handler
+        disruptor.handleEventsWith(new LongEventHandler());
 
         //Start the Disruptor,start all threads running
         disruptor.start();
@@ -51,7 +31,7 @@ public class Main07_ExceptionHandler {
         RingBuffer<LongEvent> ringBuffer = disruptor.getRingBuffer();
 
         //========================================================================
-        final int threadCount = 1;
+        final int threadCount = 50;
         CyclicBarrier barrier = new CyclicBarrier(threadCount);
         ExecutorService service = Executors.newCachedThreadPool();
         for (long i = 0; i < threadCount; i++) {
@@ -66,7 +46,7 @@ public class Main07_ExceptionHandler {
                     e.printStackTrace();
                 }
 
-                for (int j = 0; j < 10; j++) {
+                for (int j = 0; j < 100; j++) {
                     ringBuffer.publishEvent((event, sequence) -> {
                         event.set(threadNum);
                         System.out.println("生产了" + threadNum);
