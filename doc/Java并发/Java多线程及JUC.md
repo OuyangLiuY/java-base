@@ -1,5 +1,3 @@
-
-
 # 1、JUC之如何实现一把锁？
 
 1. 如何表示锁状态，无锁，有锁？
@@ -11,11 +9,11 @@
    > 什么时候发生锁重入：被锁的方法可能被多个方法调用
    >
    > 优化：使用int state；来表示锁状态和重入次数
-
+   >
 2. 如何保证多线程枪锁安全
 
    > CAS
-
+   >
 3. 如何处理获取不到锁的线程
 
    > 自旋（不停重复某个操作，直到条件满足或次数达到限制），
@@ -25,12 +23,13 @@
    > 自旋锁消耗的时间，大约上下文切换所需要的时间，那么就选择阻塞，否则，自旋
    >
    > 自旋+阻塞：自旋到一定次数，升级为阻塞
-
+   >
 4. 如何释放锁
 
    > 自旋：自己抢锁
    >
    > 阻塞：唤醒
+   >
 
 # 2、自旋优缺点：
 
@@ -42,8 +41,6 @@
 
 **适用场景：**争用比较少且代码小的临界区（线程少，并发低）
 
-
-
 # 3、从如何实现锁到什么是AQS？
 
 Abstract：因为不知道怎么上锁，模板方法设计模式即可，暴露上锁逻辑
@@ -53,8 +50,6 @@ Queue：线程阻塞队列
 Synchronize：同步
 
 CAS+state ：完成多线程枪锁逻辑，Queue完成抢不到的锁的线程排队。
-
-
 
 # 4、AQS核心代码
 
@@ -221,7 +216,7 @@ public class ReentrantLock implements Lock, java.io.Serializable {
      */
     static final class FairSync extends Sync {
         private static final long serialVersionUID = -3000897897090466540L;
-		
+
         // ReentrantLock 调用
         final void lock() {
             // 直接进入AQS标准获取锁的流程
@@ -238,7 +233,8 @@ public class ReentrantLock implements Lock, java.io.Serializable {
             int c = getState();
             // 此时正好有线程释放了锁
             if (c == 0) {
-                // 注意：这里和非公平锁的区别在于：hasQueuePredecessors看队列中是否有线程正在排队，如果没有，那么就尝试使用CAS抢锁
+                // 注意：这里和非公平锁的区别在于：hasQueuePredecessors看队列中是否有线程正在排队，
+              // 如果没有，那么就尝试使用CAS抢锁
                 if (!hasQueuedPredecessors() &&
                     compareAndSetState(0, acquires)) {
                     // 抢锁成功
@@ -259,8 +255,6 @@ public class ReentrantLock implements Lock, java.io.Serializable {
         }
     }
 ```
-
-
 
 核心方法-lock
 
@@ -356,15 +350,12 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
 1. 读锁
 
    就是用于读互斥区中保护的变量
-
 2. 写锁
 
    就是用于写互斥区中保护的变量
-
 3. 锁升级
 
    线程A获取了读锁，此时想要释放读锁，获取写锁
-
 4. 锁降级
 
    线程A获取了写锁，此时想要释放写锁，获取读锁
@@ -387,17 +378,13 @@ public interface ReadWriteLock {
 }
 ```
 
-
-
 ## 6.1、读写锁实现原理
-
-
 
 释放读锁流程:
 
-1.  先减掉当前线程持有的读锁标记位的大小
-2.  然后减掉全局的共享锁的大小
-3.  如果状态减完之后为0了，那么如果有等待的写线程，那么就唤醒，没有直接退出
+1. 先减掉当前线程持有的读锁标记位的大小
+2. 然后减掉全局的共享锁的大小
+3. 如果状态减完之后为0了，那么如果有等待的写线程，那么就唤醒，没有直接退出
 
 读写锁实现原理：
 
@@ -405,14 +392,13 @@ public interface ReadWriteLock {
 >
 > 因为state得高16位是所有读线程共享得位，通过ThreadLocal来记录每个线程获取了多少次共享锁即可，所以我们能用state得高16位用于存储所有读线程获取共享锁得次数，TL用于表示当前线程自己得重入次数。
 >
-> 总共得次数 = （All Thread's TL 求和) 
+> 总共得次数 = （All Thread's TL 求和)
 >
 > 注意：写锁，不需要记录进TL，因为互斥，用state得低16位即可
 >
 > 场景：几乎所有时间，都是同一线程获取读锁，那么有没有必要使用TL，TL占用内存，
 >
 > 优化：再读写锁总维护一个：first 获取读锁得变量和线程对象即可。
->
 
 状态和线程数
 
@@ -451,8 +437,6 @@ private transient ThreadLocalHoldCounter readHolds;
 
 ```
 
-
-
 ### 6.2.1、tryRelease
 
 释放锁过程：
@@ -478,8 +462,6 @@ protected final boolean tryRelease(int releases) {
 ### 6.2.2、tryAcquireShared
 
 获取共享锁：
-
-
 
 ```java
 protected final int tryAcquireShared(int unused) {

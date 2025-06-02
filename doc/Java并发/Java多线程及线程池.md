@@ -1,13 +1,13 @@
-# 1、Java线程与常用线程池体系 
+# 1、Java线程与常用线程池体系
 
 ## 1.1、Java线程实现方式
 
 ### 1.1.1、继承Thread
 
 1. **继承Thread**
-1. 定义Thread类的子类，并重写该类的run方法，该run方法的方法体就代表了线程要完成的任务。因此把run()方法称为执行体。
-2. 创建Thread子类的实例，即创建了线程对象。
-3. 调用线程对象的start()方法来启动该线程。
+2. 定义Thread类的子类，并重写该类的run方法，该run方法的方法体就代表了线程要完成的任务。因此把run()方法称为执行体。
+3. 创建Thread子类的实例，即创建了线程对象。
+4. 调用线程对象的start()方法来启动该线程。
 
 ### 1.1.2、实现runnable接口
 
@@ -20,7 +20,7 @@
 ### 1.1.3、实现callable接口
 
 1）创建Callable接口的实现类，并实现call()方法，该call()方法将作为线程执行体，并且有返回值。
-       public interface Callable{
+public interface Callable{
 　　      V call() throws Exception; }
 2）创建Callable实现类的实例，使用FutureTask类来包装Callable对象，该FutureTask对象封装了该Callable对象的call()方法的返回值。（FutureTask是一个包装器，它通过接受Callable来创建，它同时实现了Future和Runnable接口）
 3）使用FutureTask对象作为Thread对象的target创建并启动新线程。
@@ -44,9 +44,7 @@ public class Demo implements Callable<Integer>  {
 }
 ```
 
-
-
-## 1.2、常用线程池体系 
+## 1.2、常用线程池体系
 
 1. Executor：线程池顶级接口
 2. ExecutorService：线程池次级接口，对Executor做了一些扩展，增加了一些功能
@@ -539,9 +537,7 @@ public class ExecutorCompletionService<V> implements CompletionService<V> {
 
 ### 2.1、ThreadPoolExecutor原理
 
-![](../doc-all/images/TPE.png)
-
-
+![](../doc-all/images/muti-thread/TPE.png)
 
 ### 2.2、线程池的状态设计
 
@@ -550,30 +546,31 @@ public class ExecutorCompletionService<V> implements CompletionService<V> {
    > Accept new tasks and process queued tasks
    >
    > 接收新任务，执行队列中任务
-
+   >
 2. SHUTDOWN
 
    > Don't accept new tasks, but process queued tasks
    >
    > 不接受任务，执行队列任务
-
+   >
 3. STOP
 
    > Don't accept new tasks, don't process queued tasks, and interrupt in-progress task
    >
    > 不接受任务，不执行队列中任务，中断正在执行的任务
-
+   >
 4. TIDYING
 
-   >  All tasks have terminated, workerCount is zero,the thread transitioning to state TIDYING will run the terminated() hook method.
+   > All tasks have terminated, workerCount is zero,the thread transitioning to state TIDYING will run the terminated() hook method.
    >
-   >  所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
-
+   > 所有的任务执行完毕，转化状态为TIDYING，执行terminated钩子函数
+   >
 5. TERMINATED
 
    > terminated() has completed.
    >
    > 钩子函数执行完毕，状态为TERMINATED
+   >
 
 ```java
 /*   RUNNING:  Accept new tasks and process queued tasks
@@ -788,8 +785,6 @@ private static class DefaultThreadFactory implements ThreadFactory {
 
 线程核心原理
 
-
-
 阻塞队列
 
 ```java
@@ -799,11 +794,9 @@ private static class DefaultThreadFactory implements ThreadFactory {
  * 检索(获取)元素时，等待队列中直到有数据，添加元素直到有可用空间
  */
 public interface BlockingQueue<E> extends Queue<E> {
-     
- }     
+   
+ }   
 ```
-
-
 
 #### 2.2.3、execute
 
@@ -994,8 +987,6 @@ final void runWorker(Worker w) {
      return getState() != 0;
  }
 ```
-
-
 
 #### 2.2.6、processWorkerExit
 
@@ -1215,12 +1206,10 @@ static class DelayedWorkQueue extends AbstractQueue<Runnable>
     new RunnableScheduledFuture<?>[INITIAL_CAPACITY];
 	private final ReentrantLock lock = new ReentrantLock();
 	private int size = 0;
-    
+  
 }
 // 基于数组实现的小根堆任务队列
 ```
-
-
 
 ```java
 /**
@@ -1266,8 +1255,6 @@ private void siftDown(int k, RunnableScheduledFuture<?> key) {
 }
 ```
 
-
-
 ```java
 // 添加任务
 public boolean offer(Runnable x) {
@@ -1298,8 +1285,6 @@ public boolean offer(Runnable x) {
 }
 ```
 
-
-
 ```java
 // 取出任务
 // 这个方法是ThreadPoolExecutor中调用的take方法，等待直到能够取出，然后执行
@@ -1324,7 +1309,7 @@ public RunnableScheduledFuture<?> take() throws InterruptedException {
                             try {
                                 available.awaitNanos(delay);	//等待延迟delay时间后唤醒
                             } finally {
-                                if (leader == thisThread)		
+                                if (leader == thisThread)	
                                     leader = null;			// 判断是否当前线程，最后将复原
                             }
                         }
@@ -1469,7 +1454,7 @@ private class ScheduledFutureTask<V>
     public long getDelay(TimeUnit unit) {
         return unit.convert(time - now(), NANOSECONDS);
     }
-	
+
     // 用于放入小根堆结构的比较器
     public int compareTo(Delayed other) {
         if (other == this) // compare zero if same object
@@ -1581,8 +1566,6 @@ void reExecutePeriodic(RunnableScheduledFuture<?> task) {
 }
 ```
 
-
-
 ## 4、ForkJoinPool
 
 ### 4.1、submit
@@ -1661,7 +1644,7 @@ private void externalSubmit(ForkJoinTask<?> task) {
             rs = lockRunState();
             try {
                 if ((rs & STARTED) == 0) { // 再次判断了一下STARTED的状态位，为何，因为多线程操作的，可能线程初始化了，所以没有必要再进行CAS
-                 
+               
                     U.compareAndSwapObject(this, STEALCOUNTER, null,
                                            new AtomicLong());
                     // create workQueues array with size a power of two
@@ -1703,7 +1686,7 @@ private void externalSubmit(ForkJoinTask<?> task) {
                 } finally {
                     U.compareAndSwapInt(q, QLOCK, 1, 0); // QLOCK是volatile修饰，由于volatile的特性，这个操作CAS出去，那么QLOCK线程可见，必然上面的task和qtop可见，且有序
                 }
-               
+             
                 if (submitted) {
                     // 此时任务添加成功，但是没有工作线程，那么这时通过signalWork，创建工作线程并执行
                     signalWork(ws, q);
@@ -1741,8 +1724,6 @@ private void externalSubmit(ForkJoinTask<?> task) {
 > U.putOrderedInt(q, QTOP, s + 1);
 > // 保证s被其他线程看到的时候，taks也一定能够被看到，也即task和QTOP不会发生写写storestore重排序
 > ```
-
-
 
 #### 4.3.1、store buffer原理
 
@@ -1904,7 +1885,7 @@ final WorkQueue registerWorker(ForkJoinWorkerThread wt) {
                 // int EVENMASK     = 0xfffe; 
                 int step = (n <= 4) ? 2 : ((n >>> 1) & EVENMASK) + 2; //发生碰撞二次寻址
                 // step保证偶数，+1等于奇数
-                while (ws[i = (i + step) & m] != null) {	
+                while (ws[i = (i + step) & m] != null) {
                     if (++probes >= n) {	// 寻址达到了极限，那么扩容
                         workQueues = ws = Arrays.copyOf(ws, n <<= 1); // 扩容容量为2倍
                         m = n - 1;
@@ -1915,7 +1896,7 @@ final WorkQueue registerWorker(ForkJoinWorkerThread wt) {
             w.hint = s;                  // s作为随机数保存在wq的hint中
             w.config = i | mode;		// 保存索引下标和模式
              // publication fence， scanState为volatile，
-           w.scanState = i; // 此时对它进行写操作，storestore写成功，上面的变量一定可见，且不会和下面的ws[i]赋值发生重排序，注意这里的scanState变成了odd，也即奇数，所以要开始扫描获取任务并执行         
+           w.scanState = i; // 此时对它进行写操作，storestore写成功，上面的变量一定可见，且不会和下面的ws[i]赋值发生重排序，注意这里的scanState变成了odd，也即奇数，所以要开始扫描获取任务并执行       
             ws[i] = w;
         }
     } finally {
@@ -1936,7 +1917,7 @@ public void run() {
         Throwable exception = null;
         try {
             onStart();		// run之前的钩子函数
-            pool.runWorker(workQueue);	
+            pool.runWorker(workQueue);
         } catch (Throwable ex) {
             exception = ex;
         } finally {
@@ -1953,10 +1934,6 @@ public void run() {
 }
 ```
 
-
-
-
-
 ### 4.9、runWorker
 
 ```java
@@ -1972,7 +1949,7 @@ final void runWorker(WorkQueue w) {
         if ((t = scan(w, r)) != null)	// 扫描可执行任务
             w.runTask(t);				// 拿到任务之后，开始执行
         else if (!awaitWork(w, r))			// 如果没有任务，那么awaitWork等待任务执行
-            break;	
+            break;
         r ^= r << 13; r ^= r >>> 17; r ^= r << 5; // 异或，基于上一个随机数r，计算下一个伪随机数
     }
 }
@@ -2033,11 +2010,11 @@ scan方法中for循环执行流程如下：
 5. 此时任务t存在且q.base已经被拿到了，或者任务t不存在，只可能是因为出现了多线程竞争，所以为了减少竞争，那么重新计算随机数，转移获取任务的wq，复位origin，oldSum，checkSum，方便重新计算
 6. 如果执行到这里，那么此时修改checkSum += b;计算检查的次数
 
-2、(k = (k + 1) & m) == origin，说明此时k已经循环了一周了，那么需要将其变成稳定状态：扫描状态不变，且 没有线程操作队列 
+2、(k = (k + 1) & m) == origin，说明此时k已经循环了一周了，那么需要将其变成稳定状态：扫描状态不变，且 没有线程操作队列
 
 1. 如果ss小于0，判断ss状态是否改变，并且判断旧的oldSum和checkSum标记，同时更新oldSum。如果为true
-   1.   判断ss是否小于0，如果小于0，已经是非激活状态，直接break，或者 w.qlock < 0 此时线程已经被terminated了，直接break
-   2. 修改状态为INACTIVE： int ns = ss | INACTIVE; 
+   1. 判断ss是否小于0，如果小于0，已经是非激活状态，直接break，或者 w.qlock < 0 此时线程已经被terminated了，直接break
+   2. 修改状态为INACTIVE： int ns = ss | INACTIVE;
    3. 将ctl的线程活跃数-1，并且将状态都放置到64位中，long nc = ((SP_MASK & ns) |(UC_MASK & ((c = ctl) - AC_UNIT)));
    4. 拿到ctl中的栈地址stackPred赋值给w.stackPred
    5. 使用U.putInt(w, QSCANSTATE, ns)设置当前工作队列w的状态ns，使用unsafe操作，优化：由于这里是volatile，进行直接赋值将会导致storestore和StoreLoad屏障，所以用unsafe类来普通变量赋值，减少性能损耗，而后面的CAS操作好，自然能能够保证这里的scanState语义。
@@ -2057,7 +2034,7 @@ private ForkJoinTask<?> scan(WorkQueue w, int r) {
         // 扫描获取任务，origin初始为伪随机数取模的下标，k初始为origin
         // 由于在扫描过程中，可能有别的线程添加获取等操作，那么怎么样让当前FJWT返回呢，不可能一直在扫描，实在没有任务了，那么必须退出，避免造成性能损耗，那么问题就变为：如何发现当前没有可执行的任务呢？
         // 采用oldSum和checkSum来判断整个wqs是否处于稳定状态，也即没有别的线程在往里面添加任务了，而且经历一定周期之后
-        for (int origin = r & m, k = origin, oldSum = 0, checkSum = 0;;) {	
+        for (int origin = r & m, k = origin, oldSum = 0, checkSum = 0;;) {
             WorkQueue q; ForkJoinTask<?>[] a; ForkJoinTask<?> t;
             int b, n; long c;
             // 在wqs中，找打一个不为空的队列
@@ -2237,8 +2214,6 @@ private boolean awaitWork(WorkQueue w, int r) {
 }
 ```
 
-
-
 ### push
 
 ```java
@@ -2258,8 +2233,6 @@ final void push(ForkJoinTask<?> task) {
     }
 }
 ```
-
-
 
 ### 4.5、ForkJoinPool构造器
 
@@ -2391,7 +2364,6 @@ private int awaitRunStateLock() {
 1. 在lockRunState获取锁方法中，已经有锁，那么就去awaitRunStateLock方法等待，方法可以获取新锁标记，此时lockRunState方法返回的是具有锁标记的rs。
 
    rs=RSLOCK，=》unlockRunState中cas**修改全局状态成功**，此时没有等待线程，所以无需唤醒
-
 2. 在awaitRunStateLock方法中，还有可能，rs状态带上了RSIGNAL状态位，那么此时lockRunState方法返回的是具有锁标记和RSIGNAL状态位的rs
 
    rs=RSLOCK+RSIGNAL，有锁和RSIGNAL状态，=》**此时CAS失败**，肯定有等待的线程，需要唤醒
@@ -2411,23 +2383,23 @@ private void unlockRunState(int oldRunState, int newRunState) {
 }
 ```
 
-8、ForkJoinPool设计理念与普通线程池区别与联系 
+8、ForkJoinPool设计理念与普通线程池区别与联系
 
 9、ForkJoinPool核心数据结构
 
 10、ForkJoinTask、RecurisveAction、RecursiveTask、CountedCompleter任务区别
 
-11、ForkJoinPool提交任务执行过程源码与原理 
+11、ForkJoinPool提交任务执行过程源码与原理
 
 12、ForkJoinPool Fork/Join 过程源码与原理
 
-13、ForkJoinPool shutdown 过程源码与原理 
+13、ForkJoinPool shutdown 过程源码与原理
 
-14、ForkJoinPool awaitTermination 过程源码与原理 
+14、ForkJoinPool awaitTermination 过程源码与原理
 
-15、CompletionStage与Future原理 
+15、CompletionStage与Future原理
 
-16、 Completion及其子类与ForkJoinTask原理 
+16、 Completion及其子类与ForkJoinTask原理
 
 ## 5、基础知识
 
@@ -2451,7 +2423,7 @@ private void unlockRunState(int oldRunState, int newRunState) {
 
 > A+B = 0000 0001 + 1111 1110 = 1111 1111(f反码) - 》 变为原码 - 》 1000 0000 结果不对
 >
->  1000 0000的十进制数：-0
+> 1000 0000的十进制数：-0
 
 问题：为什么导致运算结果出现了不符合逻辑的数？因为忽略了符号位，也即符号位没有参与到运算中。
 
@@ -2479,13 +2451,12 @@ private void unlockRunState(int oldRunState, int newRunState) {
 
 ## 6、多线程实战
 
-1. 使用WebFlux增加系统整体吞吐量 
-2. 使用并行流排序减少等待时间 
-3. 使用AsyncEventBus事件机制解耦与异步执行增加系统吞吐量 
-4. 使用Netty 构造Reactor机制 
-5. 使用CompletableFuture调用链异步执行并回调，让出调度线程异步执行 
-6. 使用ForkJoinPool大任务拆分多个子任务并行处理与合并 
-7. 使用ScheduledThreadPoolExecutor异步定时或延时调度业务服务 
-8. 使用RingBuffer并行处理日志，增加日志写入速度 
-8. 使用ThreadPoolExecutor与Tomcat线程池搭配使用增加Tomcat吞吐量
-
+1. 使用WebFlux增加系统整体吞吐量
+2. 使用并行流排序减少等待时间
+3. 使用AsyncEventBus事件机制解耦与异步执行增加系统吞吐量
+4. 使用Netty 构造Reactor机制
+5. 使用CompletableFuture调用链异步执行并回调，让出调度线程异步执行
+6. 使用ForkJoinPool大任务拆分多个子任务并行处理与合并
+7. 使用ScheduledThreadPoolExecutor异步定时或延时调度业务服务
+8. 使用RingBuffer并行处理日志，增加日志写入速度
+9. 使用ThreadPoolExecutor与Tomcat线程池搭配使用增加Tomcat吞吐量
