@@ -13,8 +13,6 @@
         <module>thread</module>
         <module>java-virtual-machine</module>
         <module>disruptor</module>
-        <module>disruptor</module>
-        <module>disruptor_</module>
     </modules>
     <artifactId>sources</artifactId>
 
