@@ -537,7 +537,7 @@ public class ExecutorCompletionService<V> implements CompletionService<V> {
 
 ### 2.1、ThreadPoolExecutor原理
 
-![](../doc-all/images/muti-thread/TPE.png)
+![](../../images/muti-thread/TPE.png)
 
 ### 2.2、线程池的状态设计
 
