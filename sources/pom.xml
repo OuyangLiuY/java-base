@@ -10,8 +10,6 @@
     <packaging>pom</packaging>
     <modelVersion>4.0.0</modelVersion>
     <modules>
-        <module>thread</module>
-        <module>java-virtual-machine</module>
         <module>disruptor</module>
     </modules>
     <artifactId>sources</artifactId>
